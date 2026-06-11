@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -493,7 +494,27 @@ func (c *ClusterCoordinator) streamReplication(ctx context.Context, role string)
 		}
 		slog.Info("cluster: joined", "role", role, "cortex", resp.CortexID, "epoch", resp.Epoch)
 
+		// Register the Cortex connection and reconcile its identity so the Lobe's
+		// MSP heartbeats reach it (keeping it a live voter) and so the GetPeer-based
+		// reply paths — VoteResponse, ReplAck, CogForward, HandoffAck — actually
+		// send (#522 Step 1). CortexAddr comes from the JoinResponse (Step 0);
+		// fall back to the dialed seed for an older Cortex that didn't send it.
+		cortexAddr := resp.CortexAddr
+		if cortexAddr == "" && len(c.cfg.Seeds) > 0 {
+			cortexAddr = c.cfg.Seeds[0]
+		}
+		if resp.CortexID != "" && resp.Conn != nil {
+			c.mgr.RegisterConn(resp.CortexID, cortexAddr, resp.Conn)
+			c.reconcileJoinedPeer(resp.CortexID, cortexAddr, RolePrimary)
+		}
+
 		streamErr := c.streamFromCortex(ctx, resp.Conn, resp.CortexID)
+
+		// Tear down the connection registration on stream end (RemovePeer closes
+		// the conn); the next loop iteration rejoins and re-registers.
+		if resp.CortexID != "" {
+			c.mgr.RemovePeer(resp.CortexID)
+		}
 		if resp.Conn != nil {
 			resp.Conn.Close()
 		}
@@ -545,7 +566,7 @@ func (c *ClusterCoordinator) streamFromCortex(ctx context.Context, conn net.Conn
 		// can track replica lag (#516 part 3). The Cortex reads these acks via
 		// handleClusterConn → HandleIncomingFrame → UpdateReplicaSeq.
 		if frame.Type == mbp.TypeReplEntry {
-			c.sendReplAck(conn)
+			c.sendReplAck(cortexID, conn)
 		}
 	}
 }
@@ -553,20 +574,98 @@ func (c *ClusterCoordinator) streamFromCortex(ctx context.Context, conn net.Conn
 // sendReplAck reports this node's last-applied seq to the Cortex over the
 // replication connection. Best-effort: a write error is non-fatal — the next
 // entry's ack carries the latest seq, or the stream reconnects.
-func (c *ClusterCoordinator) sendReplAck(conn net.Conn) {
-	if c.applier == nil || conn == nil {
+// reconcileJoinedPeer replaces a seed-<addr> placeholder with the real joined
+// node-id in MSP and the voter set (#522 Step 1). Without this the Cortex's MSP
+// and votes are keyed by seed-ids while heartbeats/votes arrive under real ids
+// and get dropped, and the never-heartbeated seed placeholder drives a false
+// SDOWN.
+//
+// It CONSERVES the voter count by construction so quorum can never inflate, even
+// when the dialed/seed address string differs from the advertised address (DNS
+// seed vs pod IP, 0.0.0.0 binds, etc.): on a genuinely new join it retires
+// exactly one seed placeholder — the address-matching one if present, otherwise
+// an arbitrary remaining seed (logged loudly). A rejoin (node already known)
+// retires nothing, so it cannot deflate the set or steal another node's seed
+// slot. The real identity is added BEFORE the seed is retired so a concurrent
+// quorum read can only momentarily over-count (safe), never under-count.
+func (c *ClusterCoordinator) reconcileJoinedPeer(nodeID, addr string, role NodeRole) {
+	if nodeID == "" {
+		return
+	}
+	isVoter := c.cfg.Role != "observer"
+
+	alreadyKnown := false
+	for _, p := range c.msp.AllPeers() {
+		if p.NodeID == nodeID {
+			alreadyKnown = true
+			break
+		}
+	}
+
+	c.msp.AddPeer(nodeID, addr, role)
+	if isVoter {
+		c.election.RegisterVoter(nodeID)
+	}
+	if alreadyKnown {
+		return // rejoin — already counted; retire nothing.
+	}
+
+	// New join: retire exactly one seed placeholder to conserve the voter count.
+	var matched, anySeed string
+	for _, p := range c.msp.AllPeers() {
+		if p.NodeID == nodeID || !strings.HasPrefix(p.NodeID, "seed-") {
+			continue
+		}
+		if p.Addr == addr {
+			matched = p.NodeID
+			break
+		}
+		if anySeed == "" {
+			anySeed = p.NodeID
+		}
+	}
+	retire := matched
+	if retire == "" {
+		retire = anySeed
+		if retire != "" {
+			slog.Warn("cluster: joined peer address did not match any seed; retiring a seed placeholder to conserve quorum (set advertise_addr to match the seed addresses)",
+				"node", nodeID, "addr", addr, "retired_seed", retire)
+		}
+	}
+	if retire != "" {
+		c.msp.RemovePeer(retire)
+		c.mgr.RemovePeer(retire)
+		if isVoter {
+			c.election.UnregisterVoter(retire)
+		}
+	}
+}
+
+func (c *ClusterCoordinator) sendReplAck(cortexID string, conn net.Conn) {
+	if c.applier == nil {
 		return
 	}
 	payload, err := msgpack.Marshal(mbp.ReplAck{NodeID: c.cfg.NodeID, LastSeq: c.applier.LastApplied()})
 	if err != nil {
 		return
 	}
-	_ = mbp.WriteFrame(conn, &mbp.Frame{
-		Version:       0x01,
-		Type:          mbp.TypeReplAck,
-		PayloadLength: uint32(len(payload)),
-		Payload:       payload,
-	})
+	// Prefer the registered PeerConn so this write serializes with MSP heartbeats
+	// on the same connection (#522 Step 1). Fall back to the raw conn when the
+	// Cortex isn't registered (e.g. an older path or a test harness).
+	if cortexID != "" {
+		if peer, ok := c.mgr.GetPeer(cortexID); ok && peer.IsConnected() {
+			_ = peer.Send(mbp.TypeReplAck, payload)
+			return
+		}
+	}
+	if conn != nil {
+		_ = mbp.WriteFrame(conn, &mbp.Frame{
+			Version:       0x01,
+			Type:          mbp.TypeReplAck,
+			PayloadLength: uint32(len(payload)),
+			Payload:       payload,
+		})
+	}
 }
 
 // runAsSentinel starts MSP only, participates in voting, no data.
@@ -796,6 +895,12 @@ func (c *ClusterCoordinator) HandleIncomingJoin(conn net.Conn, payload []byte) (
 	}
 	if err := peer.Send(mbp.TypeJoinResponse, respPayload); err != nil {
 		return req.NodeID, fmt.Errorf("cluster: send JoinResponse to %s: %w", req.NodeID, err)
+	}
+
+	// Replace the seed placeholder with this Lobe's real identity in MSP + voters
+	// so heartbeats and votes keyed by its node-id are no longer dropped (#522).
+	if resp.Accepted {
+		c.reconcileJoinedPeer(req.NodeID, req.Addr, RoleReplica)
 	}
 
 	if resp.NeedsSnapshot {
