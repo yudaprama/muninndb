@@ -100,6 +100,9 @@ type ClusterCoordinator struct {
 
 	// advertiseAddr is this node's routable address (used in PeerHello, #522 Step 4).
 	advertiseAddr string
+	// electing single-flights the ODOWN-triggered failover election driver so
+	// concurrent ODOWN events don't spawn racing election loops (#522 Step 4c).
+	electing atomic.Bool
 
 	// Per-Lobe streamers (Cortex only): lobeID -> cancel func
 	streamers   map[string]context.CancelFunc
@@ -196,6 +199,7 @@ func NewClusterCoordinator(
 	joinHandler := NewJoinHandler(cfg.NodeID, cfg.ClusterSecret, epochStore, repLog, mgr)
 	joinHandler.localAddr = advertiseAddr
 	joinClient := NewJoinClient(cfg.NodeID, advertiseAddr, cfg.ClusterSecret, epochStore, applier, mgr)
+	joinClient.localRole = roleFromConfigString(cfg.Role)
 
 	reconDelay := time.Duration(cfg.ReconDelayMs) * time.Millisecond
 	if reconDelay <= 0 {
@@ -251,9 +255,7 @@ func NewClusterCoordinator(
 			slog.Info("cluster: sentinel node observed ODOWN, skipping election start", "down_node", nodeID)
 			return
 		}
-		if err := c.election.StartElection(context.Background()); err != nil {
-			slog.Error("cluster: failed to start election after ODOWN", "err", err)
-		}
+		c.startElectionWithJitter()
 	}
 
 	// Wire OnSDown to check quorum health — if we are Cortex and lose quorum
@@ -705,7 +707,10 @@ func (c *ClusterCoordinator) reconcileJoinedPeer(nodeID, addr string, role NodeR
 		}
 	}
 	retire := matched
-	if retire == "" {
+	if retire == "" && isVoter {
+		// Only a voter join may retire an arbitrary (non-address-matching) seed —
+		// an observer that matches no seed must not retire and unregister an
+		// unrelated voter placeholder (#529).
 		retire = anySeed
 		if retire != "" {
 			slog.Warn("cluster: joined peer address did not match any seed; retiring a seed placeholder to conserve quorum (set advertise_addr to match the seed addresses)",
@@ -715,9 +720,10 @@ func (c *ClusterCoordinator) reconcileJoinedPeer(nodeID, addr string, role NodeR
 	if retire != "" {
 		c.msp.RemovePeer(retire)
 		c.mgr.RemovePeer(retire)
-		if isVoter {
-			c.election.UnregisterVoter(retire)
-		}
+		// A seed placeholder is always registered as a voter at startup, so a
+		// retired seed must always be unregistered — even on an observer join,
+		// where the "expected voter" turned out to be a non-voting observer.
+		c.election.UnregisterVoter(retire)
 	}
 }
 
@@ -1157,10 +1163,16 @@ func (c *ClusterCoordinator) HandleIncomingJoin(conn net.Conn, payload []byte) (
 		return req.NodeID, fmt.Errorf("cluster: send JoinResponse to %s: %w", req.NodeID, err)
 	}
 
-	// Replace the seed placeholder with this Lobe's real identity in MSP + voters
-	// so heartbeats and votes keyed by its node-id are no longer dropped (#522).
+	// Replace the seed placeholder with this joiner's real identity in MSP + voters
+	// so heartbeats and votes keyed by its node-id are no longer dropped (#522). Use
+	// the joiner's advertised role (0 = legacy = replica) so a joining Observer is
+	// not registered as a voter (#529).
 	if resp.Accepted {
-		c.reconcileJoinedPeer(req.NodeID, req.Addr, RoleReplica)
+		joinerRole := NodeRole(req.Role)
+		if joinerRole == RoleUnknown {
+			joinerRole = RoleReplica
+		}
+		c.reconcileJoinedPeer(req.NodeID, req.Addr, joinerRole)
 	}
 
 	if resp.NeedsSnapshot {
@@ -1261,6 +1273,17 @@ func (c *ClusterCoordinator) HandleIncomingFrame(fromNodeID string, frameType ui
 			return fmt.Errorf("unmarshal ReplAck: %w", err)
 		}
 		c.UpdateReplicaSeq(ack.NodeID, ack.LastSeq)
+		return nil
+
+	case mbp.TypeSDown:
+		var msg mbp.SDownNotification
+		if err := msgpack.Unmarshal(payload, &msg); err != nil {
+			return fmt.Errorf("unmarshal SDownNotification: %w", err)
+		}
+		// Key the vote by the authenticated frame source, not the payload's
+		// SenderID — otherwise one peer could forge many sender ids to drive ODOWN
+		// unilaterally (#522 Step 4c). Gossip is one-hop, so fromNodeID is the voter.
+		c.msp.RecordDownVote(fromNodeID, msg.TargetID)
 		return nil
 
 	case mbp.TypeCogForward:
