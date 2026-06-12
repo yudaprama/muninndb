@@ -58,6 +58,17 @@ func NewJoinHandlerWithDB(localNodeID, clusterSecret string, epochStore *EpochSt
 	return h
 }
 
+// ValidSecret reports whether secretHash is a valid HMAC of nodeID under the
+// cluster secret (always true in open mode). Used to authenticate probes (#531 PR3).
+func (h *JoinHandler) ValidSecret(nodeID string, secretHash []byte) bool {
+	if h.clusterSecret == "" {
+		return true
+	}
+	expected := hmac.New(sha256.New, []byte(h.clusterSecret))
+	expected.Write([]byte(nodeID))
+	return hmac.Equal(secretHash, expected.Sum(nil))
+}
+
 // HandleJoinRequest processes a JoinRequest from a connecting Lobe.
 // On success it adds the Lobe to the members map and returns an accepted
 // JoinResponse. It deliberately does NOT register the conn in mgr (the
@@ -334,6 +345,61 @@ func NewJoinClientWithDB(localNodeID, localAddr, clusterSecret string, epochStor
 // received and written to the local DB before this method returns.
 // The caller should start a NetworkStreamer from JoinResult.StreamFromSeq+1.
 // On failure it returns an error; the caller should retry with backoff.
+// Probe sends a side-effect-free leader-discovery JoinRequest{Probe:true} to
+// cortexAddr and returns the response (who the leader is). It does not register,
+// snapshot, or mutate any state — used by a returning designated primary to find
+// the current leader before deciding whether to assert or defer (#531 PR3).
+func (c *JoinClient) Probe(ctx context.Context, cortexAddr string) (mbp.JoinResponse, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", cortexAddr)
+	if err != nil {
+		return mbp.JoinResponse{}, fmt.Errorf("probe: dial %s: %w", cortexAddr, err)
+	}
+	defer conn.Close()
+
+	var secretHash []byte
+	if c.clusterSecret != "" {
+		h := hmac.New(sha256.New, []byte(c.clusterSecret))
+		h.Write([]byte(c.localNodeID))
+		secretHash = h.Sum(nil)
+	}
+	req := mbp.JoinRequest{
+		NodeID:          c.localNodeID,
+		Addr:            c.localAddr,
+		SecretHash:      secretHash,
+		Role:            uint8(c.localRole),
+		Probe:           true,
+		ProtocolVersion: mbp.CurrentProtocolVersion,
+	}
+	payload, err := msgpack.Marshal(req)
+	if err != nil {
+		return mbp.JoinResponse{}, fmt.Errorf("probe: marshal request: %w", err)
+	}
+	if err := mbp.WriteFrame(conn, &mbp.Frame{
+		Version:       0x01,
+		Type:          mbp.TypeJoinRequest,
+		PayloadLength: uint32(len(payload)),
+		Payload:       payload,
+	}); err != nil {
+		return mbp.JoinResponse{}, fmt.Errorf("probe: send request: %w", err)
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetReadDeadline(dl)
+	}
+	respFrame, err := mbp.ReadFrame(conn)
+	if err != nil {
+		return mbp.JoinResponse{}, fmt.Errorf("probe: read response: %w", err)
+	}
+	if respFrame.Type != mbp.TypeJoinResponse {
+		return mbp.JoinResponse{}, fmt.Errorf("probe: unexpected frame type 0x%02x", respFrame.Type)
+	}
+	var resp mbp.JoinResponse
+	if err := msgpack.Unmarshal(respFrame.Payload, &resp); err != nil {
+		return mbp.JoinResponse{}, fmt.Errorf("probe: unmarshal response: %w", err)
+	}
+	return resp, nil
+}
+
 func (c *JoinClient) Join(ctx context.Context, cortexAddr string) (JoinResult, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", cortexAddr)
