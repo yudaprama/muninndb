@@ -10,7 +10,24 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+
+          - runner: macos-14
+            goos: darwin
+            goarch: amd64
+
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,23 +55,30 @@ jobs:
       - name: Build web assets
         run: cd web && npm ci --ignore-scripts && npm run build
 
-      - name: Build Linux binary
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
         run: |
-          mkdir -p dist
-          CGO_ENABLED=1 go build -tags localassets -ldflags "-X main.version=${GITHUB_REF_NAME}" -o dist/muninn-linux-amd64 ./cmd/muninn/...
+          go build -tags localassets -ldflags "-X main.version=${GITHUB_REF_NAME}" -o muninn-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/muninn/...
 
-      - name: Build macOS amd64 binary
-        run: |
-          mkdir -p dist
-          GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -tags localassets -ldflags "-X main.version=${GITHUB_REF_NAME}" -o dist/muninn-darwin-amd64 ./cmd/muninn/...
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: muninn-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: muninn-${{ matrix.goos }}-${{ matrix.goarch }}
 
-      - name: Build macOS arm64 binary
-        run: |
-          mkdir -p dist
-          GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -tags localassets -ldflags "-X main.version=${GITHUB_REF_NAME}" -o dist/muninn-darwin-arm64 ./cmd/muninn/...
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
       - name: Create Release
-        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{github.run_number}}
@@ -62,29 +86,9 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Linux binary
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{github.run_number}}
-          files: dist/muninn-linux-amd64
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload macOS amd64 binary
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{github.run_number}}
-          files: dist/muninn-darwin-amd64
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload macOS arm64 binary
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{github.run_number}}
-          files: dist/muninn-darwin-arm64
+          files: |
+            muninn-darwin-arm64
+            muninn-darwin-amd64
+            muninn-linux-amd64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
