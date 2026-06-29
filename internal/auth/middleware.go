@@ -76,6 +76,45 @@ func (s *Store) VaultAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// VaultFromTrustedHeader resolves the request's vault from an identity header
+// injected by a trusted auth edge (e.g. Ory Oathkeeper, which sets it from the
+// Kratos session cookie and strips any client-supplied copy first). It is the
+// direct analog of pREST's [[auth.user_id_filters]]: the edge is authoritative
+// for identity, so the vault is the header value and callers cannot override it.
+//
+// SECURITY: this trusts the network boundary. It MUST only be enabled when the
+// server is bound behind such an edge (loopback / private bind) — never on a
+// public listener, or any caller could spoof the header and read any vault.
+// Unlike VaultAuthWithAdminBypass, this path does NOT honor the admin-session
+// cookie, so a stray muninn_session can never cross-read another user's vault.
+func VaultFromTrustedHeader(headerName string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vault := strings.TrimSpace(r.Header.Get(headerName))
+		if vault == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"missing trusted identity header","code":"EDGE_IDENTITY_REQUIRED"}`))
+			return
+		}
+		// Reject a client-supplied vault that disagrees with the trusted identity,
+		// mirroring the query-param check in VaultAuthMiddleware (the body-vault
+		// case is caught downstream by validateResolvedVault via ctxVault).
+		if q := strings.TrimSpace(r.URL.Query().Get("vault")); q != "" && q != vault {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			errMsg, _ := json.Marshal(map[string]string{
+				"error": fmt.Sprintf("identity is not authorized for vault %q", q),
+				"code":  "VAULT_KEY_MISMATCH",
+			})
+			w.Write(errMsg)
+			return
+		}
+		ctx := context.WithValue(r.Context(), ContextVault, vault)
+		ctx = context.WithValue(ctx, ContextMode, ModeFull)
+		next(w, r.WithContext(ctx))
+	}
+}
+
 // AdminSessionMiddleware checks for a valid admin session cookie.
 // Redirects to /login on failure — suitable for browser-facing UI routes.
 func AdminSessionMiddleware(secret []byte, next http.HandlerFunc) http.HandlerFunc {

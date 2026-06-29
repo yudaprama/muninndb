@@ -85,9 +85,17 @@ type Server struct {
 	authStore     *auth.Store
 	sessionSecret []byte   // for admin session validation
 	corsOrigins   []string // allowed CORS origins; nil = no cross-origin allowed
-	mux           *http.ServeMux
-	server        *http.Server
-	tlsConfig     *tls.Config // nil = plain TCP
+
+	// trustedVaultHeader, when non-empty, switches /api/* auth to edge mode: the
+	// vault is taken from this request header (injected by a trusted auth edge
+	// such as Ory Oathkeeper) instead of a Bearer API key. Only safe on a bind
+	// that sits behind such an edge. Set via SetTrustedVaultHeader. "" = disabled
+	// (default Bearer-key + admin-session auth).
+	trustedVaultHeader string
+
+	mux       *http.ServeMux
+	server    *http.Server
+	tlsConfig *tls.Config // nil = plain TCP
 
 	// Embedder info — set at construction time, static for the lifetime of the server.
 	embedProvider            string // "ollama", "openai", "voyage", or "none"
@@ -378,6 +386,13 @@ func (s *Server) SetDataDir(dir string) { s.dataDir = dir }
 // SetVersion sets the version string reported by the health endpoint.
 func (s *Server) SetVersion(v string) { s.version = v }
 
+// SetTrustedVaultHeader enables edge auth mode for /api/* routes: the vault is
+// resolved from the named request header (injected by a trusted auth edge such
+// as Ory Oathkeeper) instead of a Bearer API key. Pass "" to keep the default
+// Bearer-key + admin-session auth. Only set this when the server is bound behind
+// such an edge — see VaultFromTrustedHeader for the security model.
+func (s *Server) SetTrustedVaultHeader(name string) { s.trustedVaultHeader = name }
+
 // probeDBWritability runs a periodic background check of data directory writability.
 // It writes and deletes a small sentinel file every 30 seconds rather than on every
 // health request, so load-balancer probes (fired 2-10x/sec) never touch the disk.
@@ -572,10 +587,32 @@ func (s *Server) publicBodySizeMiddleware(next http.HandlerFunc) http.HandlerFun
 // Admin session cookies bypass vault locking so the Web UI can access any vault.
 // If authStore is nil (e.g. in tests), vault auth is skipped.
 func (s *Server) withMiddleware(handler http.HandlerFunc) http.HandlerFunc {
-	if s.authStore == nil {
-		return s.withPublicMiddleware(s.bodySizeMiddleware(handler))
+	// Default auth: Bearer API key + admin-session bypass (nil store = public).
+	inner := handler
+	if s.authStore != nil {
+		inner = s.authStore.VaultAuthWithAdminBypass(s.sessionSecret, handler)
 	}
-	return s.withPublicMiddleware(s.bodySizeMiddleware(s.authStore.VaultAuthWithAdminBypass(s.sessionSecret, handler)))
+	// Edge mode coexists with the default path: a request carrying the trusted
+	// identity header (injected by the auth edge, e.g. Oathkeeper) resolves the
+	// vault from it — that path does NOT honor the admin-session cookie, so a
+	// stray muninn_session can never cross-read another user's vault. Requests
+	// WITHOUT the header (local server-to-server callers like egent-lobehub) fall
+	// back to the default Bearer/admin/public auth so their access is unchanged.
+	// Safe only because the edge blanks any inbound copy of the header and the
+	// server is bound behind it — see VaultFromTrustedHeader.
+	if s.trustedVaultHeader != "" {
+		trusted := auth.VaultFromTrustedHeader(s.trustedVaultHeader, handler)
+		fallback := inner
+		header := s.trustedVaultHeader
+		inner = func(w http.ResponseWriter, r *http.Request) {
+			if strings.TrimSpace(r.Header.Get(header)) != "" {
+				trusted(w, r)
+				return
+			}
+			fallback(w, r)
+		}
+	}
+	return s.withPublicMiddleware(s.bodySizeMiddleware(inner))
 }
 
 // withAdminMiddleware applies observability + body size limit + admin session auth.

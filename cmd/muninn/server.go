@@ -1345,6 +1345,16 @@ func runServer() {
 	})
 	restServer.SetVersion(muninnVersion())
 
+	// Edge auth mode: when MUNINN_TRUST_EDGE_HEADER is set (e.g. "X-User-Id"),
+	// /api/* takes the vault from that header instead of a Bearer API key. The
+	// header is assumed to be injected by a trusted auth edge (Ory Oathkeeper)
+	// that strips any client-supplied copy. Only enable on a bind that sits
+	// behind such an edge (loopback/private) — never on a public listener.
+	if edgeHeader := strings.TrimSpace(os.Getenv("MUNINN_TRUST_EDGE_HEADER")); edgeHeader != "" {
+		restServer.SetTrustedVaultHeader(edgeHeader)
+		slog.Warn("rest: edge auth mode enabled — vault resolved from trusted header; ensure this bind is behind an auth edge and not publicly reachable", "header", edgeHeader)
+	}
+
 	auditLogger := buildAuditLogger(*dataDir)
 	if auditLogger != nil {
 		restServer.SetAuditLogger(auditLogger)
