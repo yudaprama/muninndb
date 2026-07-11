@@ -183,6 +183,19 @@ func NewServer(addr string, engine EngineAPI, authStore *auth.Store, sessionSecr
 	}
 	// Subsystems are considered ready immediately unless explicitly marked otherwise.
 	s.subsystemsReady.Store(true)
+
+	// Edge auth mode: resolve the vault from a trusted identity header
+	// (e.g. X-User-Id) injected by an auth edge (Ory Oathkeeper).
+	// MUST be set here — BEFORE the route registration below — so the
+	// trusted-header branch inside withMiddleware is wired into every vault
+	// route. SetTrustedVaultHeader() is still called later by the CLI,
+	// but by then the mux is already built with the (empty) value, so
+	// edge auth would silently never engage. Mirror cmd/muninn/server.go's
+	// default: only enable when MUNINN_TRUST_EDGE_HEADER is non-empty.
+	if h := strings.TrimSpace(os.Getenv("MUNINN_TRUST_EDGE_HEADER")); h != "" {
+		s.trustedVaultHeader = h
+	}
+
 	if len(mcpInfo) > 0 {
 		s.mcpAddr = mcpInfo[0].Addr
 		s.mcpHasToken = mcpInfo[0].HasToken
