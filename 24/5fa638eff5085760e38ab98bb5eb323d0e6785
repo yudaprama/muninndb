@@ -1,0 +1,24 @@
+sdk/go/muninn/client.go
+  s_334cc53e2232ef::t_ea7ca4f1680401 682,687-692
+  s_334cc53e2232ef::t_4772fb537dfe4e 24-40,693
+  s_334cc53e2232ef::t_8a5be4188a755d 247
+  s_334cc53e2232ef::t_1767d14db2cde7 618
+internal/transport/rest/server.go
+  s_334cc53e2232ef::t_d44fbc304d2913 186-198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "245fa638eff5085760e38ab98bb5eb323d0e6785",
+  "prompts": {},
+  "sessions": {
+    "s_334cc53e2232ef": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0b5986191ffep0ZoCQHORj76kz",
+        "model": "hy3-free"
+      },
+      "human_author": "yudaprama <yudhaprama@icloud.com>"
+    }
+  }
+}
