@@ -1,0 +1,362 @@
+internal/engine/engine_similarity_test.go
+  s_925d98967e0434::t_54b55e48521133 112-129
+internal/index/hnsw/registry_dim_test.go
+  s_925d98967e0434::t_54b55e48521133 1-170
+internal/mcp/server.go
+  s_925d98967e0434::t_54b55e48521133 14,24-31,62,64-66,68-83,146,182,210,212-215,237-256,275-277,325-327,357-358,372,438-441,458-488,508,587,677
+cmd/muninn/dispatch_test.go
+  s_925d98967e0434::t_54b55e48521133 24-29
+internal/storage/vault_embed_dim_test.go
+  s_925d98967e0434::t_54b55e48521133 1-52
+internal/storage/engram_test.go
+  s_925d98967e0434::t_54b55e48521133 323-350
+internal/auth/plasticity_test.go
+  s_925d98967e0434::t_54b55e48521133 3-6,51-76,122-124,294,315,390,418,558-583
+docs/plugins.md
+  s_925d98967e0434::t_54b55e48521133 104,115-220,337
+internal/transport/grpc/server_test.go
+  s_925d98967e0434::t_54b55e48521133 34,36,98-108,116-122,727,745-748,783-790,820,838-841,876-883,1407-1478,1521-1566
+internal/auth/lockout_regression_test.go
+  s_925d98967e0434::t_54b55e48521133 1-143
+.github/workflows/release.yml
+  s_925d98967e0434::t_54b55e48521133 22-24,29-32,37-46
+internal/plugin/embed/local_assets_noembed.go
+  s_925d98967e0434::t_54b55e48521133 31-36
+cmd/muninn/main.go
+  s_925d98967e0434::t_54b55e48521133 77-78,132-148
+internal/storage/migrate/recover_test.go
+  s_925d98967e0434::t_54b55e48521133 1-131
+internal/auth/rrf_plasticity_test.go
+  s_925d98967e0434::t_54b55e48521133 17
+docs/self-hosting.md
+  s_925d98967e0434::t_54b55e48521133 100,250-269,322
+internal/mcp/create_workflow_vault_test.go
+  s_925d98967e0434::t_54b55e48521133 1-438
+muninn.go
+  s_925d98967e0434::t_54b55e48521133 95
+proto/muninn/v1/service.proto
+  s_925d98967e0434::t_54b55e48521133 94-107,223-228,235,239
+internal/engine/engine_lease.go
+  s_925d98967e0434::t_54b55e48521133 1-203
+docs/quickstart.md
+  s_925d98967e0434::t_54b55e48521133 149
+internal/engine/engine.go
+  s_925d98967e0434::t_54b55e48521133 227-232,237-243,793-814,884-896,1009-1014,1027-1030,1032-1041,1043-1048,1374-1380,1385-1403,1499-1505,1550-1565,1574,1695-1697,1700-1705,1981-1985,2161-2162,2208-2235,2364,2771-2773,2784-2790,2792,2896-2901,2981-2983,2986-2991
+internal/storage/recall_event.go
+  s_925d98967e0434::t_54b55e48521133 1-236
+internal/storage/migrate/v3_auth_prefix_relocate_test.go
+  s_925d98967e0434::t_54b55e48521133 1-337
+internal/storage/vault.go
+  s_925d98967e0434::t_54b55e48521133 7,77-78,186-187,196
+internal/mcp/server_test.go
+  s_925d98967e0434::t_54b55e48521133 21-32,132-133,196-211,217,313-314
+internal/index/hnsw/hnsw.go
+  s_925d98967e0434::t_54b55e48521133 86-98,101,106-129,131,491-499,526-532,542-545,833-938,944,952-954,960-990
+  s_925d98967e0434::t_b09c4be2b8febf 991
+cmd/muninn/remember_test.go
+  s_925d98967e0434::t_54b55e48521133 1-296
+docs/internals/drift-and-obligations.md
+  s_925d98967e0434::t_54b55e48521133 1-114
+internal/engine/tree.go
+  s_925d98967e0434::t_54b55e48521133 231-236,321-323,326-331
+internal/storage/idempotency.go
+  s_925d98967e0434::t_54b55e48521133 10,61,76
+internal/storage/recall_event_test.go
+  s_925d98967e0434::t_54b55e48521133 1-174
+internal/mcp/tools.go
+  s_925d98967e0434::t_54b55e48521133 6,217-224,331,417-457,568,584,917-929
+internal/mcp/convert.go
+  s_925d98967e0434::t_54b55e48521133 41-44,66-67
+CLAUDE.md
+  s_925d98967e0434::t_54b55e48521133 1-153
+internal/mcp/handlers_provenance_test.go
+  s_925d98967e0434::t_54b55e48521133 20,83
+internal/auth/capability_store.go
+  s_925d98967e0434::t_54b55e48521133 1-159
+internal/index/hnsw/disconnected_rebuild_test.go
+  s_925d98967e0434::t_54b55e48521133 1-118
+internal/plugin/embed/adapters_test.go
+  s_925d98967e0434::t_54b55e48521133 90-142
+internal/plugin/store_adapter.go
+  s_925d98967e0434::t_54b55e48521133 50-56,60-81
+  s_925d98967e0434::t_a103c87fd65b96 82
+internal/plugin/types.go
+  s_925d98967e0434::t_54b55e48521133 22-28
+internal/transport/rest/server.go
+  s_925d98967e0434::t_54b55e48521133 271-272
+internal/storage/migrate/migrate_test.go
+  s_925d98967e0434::t_54b55e48521133 170-185
+internal/engine/engine_export.go
+  s_925d98967e0434::t_54b55e48521133 26,28
+internal/mcp/server_coverage_test.go
+  s_925d98967e0434::t_54b55e48521133 126,138,162
+internal/index/hnsw/registry.go
+  s_925d98967e0434::t_54b55e48521133 5,14-38,150-153,162-164,167-169,197-208,308-322
+  s_925d98967e0434::t_cfa1636e5a8cfe 323
+internal/mcp/engine_adapter_test.go
+  s_925d98967e0434::t_54b55e48521133 61-63,312-335
+internal/auth/capability_store_test.go
+  s_925d98967e0434::t_54b55e48521133 1-63
+internal/storage/lease_test.go
+  s_925d98967e0434::t_54b55e48521133 1-230
+internal/engine/engine_reindex_fts.go
+  s_925d98967e0434::t_54b55e48521133 35,37
+internal/storage/migrate/recover.go
+  s_925d98967e0434::t_54b55e48521133 1-56
+internal/storage/embed_migration.go
+  s_925d98967e0434::t_54b55e48521133 9,35,38,49,52,136,139,172-211
+  s_925d98967e0434::t_06f378c43123ff 212
+docs/internals/keyspace-registry.md
+  s_925d98967e0434::t_54b55e48521133 1-124
+internal/mcp/types.go
+  s_925d98967e0434::t_54b55e48521133 43-47,77-78,370-371
+internal/mcp/handlers_feedback_test.go
+  s_925d98967e0434::t_54b55e48521133 16,39
+cmd/muninn/smoke_exhaustive_test.go
+  s_925d98967e0434::t_54b55e48521133 35-37,54,568-647,958-973
+internal/config/plugin_test.go
+  s_925d98967e0434::t_54b55e48521133 3-7,11-53
+  s_925d98967e0434::t_08cd88179af9ba 54
+internal/engine/engine_recall_event_test.go
+  s_925d98967e0434::t_54b55e48521133 1-124
+internal/engine/engine_vault.go
+  s_925d98967e0434::t_54b55e48521133 202-255
+docs/internals/review-rubric.md
+  s_925d98967e0434::t_54b55e48521133 1-127
+internal/mcp/handlers_entity_test.go
+  s_925d98967e0434::t_54b55e48521133 31,69,103
+internal/engine/activation/engine.go
+  s_925d98967e0434::t_54b55e48521133 5,18,176-181,208-210,218-227,397-404,519-525,572,600-662,673-686,711-715,744-753,786-793,815,826,832,870-876,1275,1290,1347-1364,1381-1386,1398-1404,1408-1409
+cmd/muninn/remember.go
+  s_925d98967e0434::t_54b55e48521133 1-324
+cmd/muninn/coverage_hardening_test.go
+  s_925d98967e0434::t_54b55e48521133 15,1835-1914,2479-2594
+CHANGELOG.md
+  s_925d98967e0434::t_54b55e48521133 12-153
+.github/workflows/ci.yml
+  s_925d98967e0434::t_54b55e48521133 49,99,236,325
+internal/auth/capability.go
+  s_925d98967e0434::t_54b55e48521133 1-19
+internal/engine/engine_idempotency_test.go
+  s_925d98967e0434::t_54b55e48521133 1-150
+internal/auth/keys.go
+  s_925d98967e0434::t_54b55e48521133 3-4,6-11,47-71
+  s_925d98967e0434::t_810ba9be1051f1 72
+internal/engine/activation/adapters.go
+  s_925d98967e0434::t_54b55e48521133 52-58,62,69
+internal/mcp/context_capability_test.go
+  s_925d98967e0434::t_54b55e48521133 1-74
+internal/mcp/decide_test.go
+  s_925d98967e0434::t_54b55e48521133 105,119,130,141,153
+cmd/muninn/vault.go
+  s_925d98967e0434::t_54b55e48521133 13,15,18-19,40,73,115-116,1366-1625
+internal/plugin/embed/embed.go
+  s_925d98967e0434::t_54b55e48521133 41-46,123-130
+internal/storage/impl.go
+  s_925d98967e0434::t_54b55e48521133 17,86-88,161,638-644,649
+internal/storage/plugin_store.go
+  s_925d98967e0434::t_54b55e48521133 10,20-21,64-65,90-91,208-209
+internal/transport/grpc/engine_adapter.go
+  s_925d98967e0434::t_54b55e48521133 150-164,176-182
+  s_925d98967e0434::t_95f5e4abbc3d14 183
+internal/storage/clone.go
+  s_925d98967e0434::t_54b55e48521133 12,47-51,89,92,205-206,295,298,400,403,406,446
+.claude/agents/code-reviewer.md
+  s_925d98967e0434::t_54b55e48521133 1-125
+cmd/muninn/mcp_stdio.go
+  s_925d98967e0434::t_54b55e48521133 25-34,100-104,113,162-164
+  s_925d98967e0434::t_070de048882348 165
+internal/storage/keys/keys_test.go
+  s_925d98967e0434::t_54b55e48521133 9-10,58,322-407
+  s_925d98967e0434::t_35563e8d1cf4b7 408
+docs/feature-reference.md
+  s_925d98967e0434::t_54b55e48521133 327,344,354
+internal/mcp/handlers.go
+  s_925d98967e0434::t_54b55e48521133 5-6,13-14,76,322-329,459-463,566-576,875-878,882,1011,1016-1019,1021-1026,1031-1036,1039,1043-1055,1910-2112
+.gitignore
+  s_925d98967e0434::t_54b55e48521133 78-83
+internal/storage/engram.go
+  s_925d98967e0434::t_54b55e48521133 13,428-442,451,453,456,458,468,584,587,926,929,940,943
+internal/auth/keys_test.go
+  s_925d98967e0434::t_54b55e48521133 1-55
+internal/storage/query.go
+  s_925d98967e0434::t_54b55e48521133 4,13,42,193,246-247,345-351,369,378-381,385-546,669,698,779,785
+internal/storage/replication_hook_test.go
+  s_925d98967e0434::t_54b55e48521133 260-284
+internal/auth/plasticity_ltp_test.go
+  s_925d98967e0434::t_54b55e48521133 78
+internal/mcp/handlers_coverage_test.go
+  s_925d98967e0434::t_54b55e48521133 627-647
+internal/prefix/prefix.go
+  s_925d98967e0434::t_54b55e48521133 1-139
+internal/mcp/engine_adapter.go
+  s_925d98967e0434::t_54b55e48521133 26-38,331,385,390-403,624-646
+  s_925d98967e0434::t_ff500e2846757e 647
+internal/plugin/embed/adapters.go
+  s_925d98967e0434::t_54b55e48521133 28-61
+internal/mcp/handlers_entity_rel_test.go
+  s_925d98967e0434::t_54b55e48521133 24,59,79
+internal/plugin/enrich/google.go
+  s_925d98967e0434::t_54b55e48521133 106
+internal/storage/entity_scan_test.go
+  s_925d98967e0434::t_54b55e48521133 91-115
+internal/transport/grpc/server.go
+  s_925d98967e0434::t_54b55e48521133 32,34,360-374,390-401,403
+  s_925d98967e0434::t_5ef8e2747e5c32 402,404
+internal/engine/activation/adapters_test.go
+  s_925d98967e0434::t_54b55e48521133 8-12,19-20
+internal/plugin/embed/local_custom_test.go
+  s_925d98967e0434::t_54b55e48521133 1-205
+internal/plugin/store.go
+  s_925d98967e0434::t_54b55e48521133 55-63
+internal/plugin/retroactive.go
+  s_925d98967e0434::t_54b55e48521133 14,289,337-352,359-373,453-465,568-573
+  s_925d98967e0434::t_6d74d951173717 574
+internal/auth/plasticity.go
+  s_925d98967e0434::t_54b55e48521133 8,71-77,116-118,270-298,508-509
+  s_925d98967e0434::t_2d3f0ea76511d0 510
+internal/index/hnsw/insert_reachability_test.go
+  s_925d98967e0434::t_54b55e48521133 1-237
+docs/internals/decision-record.md
+  s_925d98967e0434::t_54b55e48521133 1-145
+internal/mcp/guide.go
+  s_925d98967e0434::t_54b55e48521133 46-54,81-85,93-97,108,114-116,181-185
+internal/plugin/registry_test.go
+  s_925d98967e0434::t_54b55e48521133 24,28
+internal/storage/archive_bloom.go
+  s_925d98967e0434::t_54b55e48521133 6,42-43
+internal/transport/rest/openapi.yaml
+  s_925d98967e0434::t_54b55e48521133 321-322,339-363,979-985
+internal/engine/activation/tag_seeding_test.go
+  s_925d98967e0434::t_54b55e48521133 1-331
+internal/mcp/engine.go
+  s_925d98967e0434::t_54b55e48521133 90-94,176-189,194-203
+internal/mcp/toolset.go
+  s_925d98967e0434::t_54b55e48521133 1-87
+internal/engine/engine_find_by_entity_test.go
+  s_925d98967e0434::t_54b55e48521133 47,49-50,53,98,102
+internal/config/plugin.go
+  s_925d98967e0434::t_54b55e48521133 19-29
+internal/plugin/dim_guard_test.go
+  s_925d98967e0434::t_54b55e48521133 1-166
+internal/plugin/embed/local.go
+  s_925d98967e0434::t_54b55e48521133 12,36-40,52-59,66-69,80-91,116-162,171-175,177-264,267,283,285,287,290-303,305-306,308-309,311-318,320-328,330-336,338,340,342-349,351,353-370,373-389,392-402,404-408,411-436,440-441,448-449,451,453,455-457,461-496,498,502-504,506-507,510-515
+internal/prefix/prefix_test.go
+  s_925d98967e0434::t_54b55e48521133 1-155
+web/static/js/app.js
+  s_925d98967e0434::t_54b55e48521133 207,1977-1980,1990,2004,2012,2019,2096,2105,2107,2116-2126
+internal/engine/engine_entity_resolve_test.go
+  s_925d98967e0434::t_54b55e48521133 1-190
+internal/mcp/toolset_test.go
+  s_925d98967e0434::t_54b55e48521133 1-126
+internal/engine/engine_find_by_entity.go
+  s_925d98967e0434::t_54b55e48521133 5,11-38,40,51-82,89,101
+cmd/muninn/server.go
+  s_925d98967e0434::t_54b55e48521133 162-166,352-386,465-472,477-513,579-583,592-604,756-789,956,1157-1183,1191,1334-1342,1532-1537
+internal/storage/prefix_lists_test.go
+  s_925d98967e0434::t_54b55e48521133 1-258
+internal/storage/wal_syncer_adaptive_test.go
+  s_925d98967e0434::t_54b55e48521133 170-174,180-183,190-198,200-201,205-210,212-213
+internal/storage/vault_lifecycle_test.go
+  s_925d98967e0434::t_54b55e48521133 8,153,374-414
+  s_925d98967e0434::t_c2b913b2fe17b8 415
+internal/engine/activation/helpers_test.go
+  s_925d98967e0434::t_54b55e48521133 4,6-7,418-424,469-472,502-575,2367-2422
+internal/mcp/handlers_tree_test.go
+  s_925d98967e0434::t_54b55e48521133 362
+cmd/muninn/mcp_stdio_test.go
+  s_925d98967e0434::t_54b55e48521133 286-334
+docs/auth.md
+  s_925d98967e0434::t_54b55e48521133 97-184,259,310,313,350
+cmd/muninn/help.go
+  s_925d98967e0434::t_54b55e48521133 141-161,361
+internal/storage/lease.go
+  s_925d98967e0434::t_54b55e48521133 1-214
+internal/storage/query_range_test.go
+  s_925d98967e0434::t_54b55e48521133 169-413
+internal/transport/rest/admin_handlers.go
+  s_925d98967e0434::t_54b55e48521133 230-290,353-362
+web/templates/index.html
+  s_925d98967e0434::t_54b55e48521133 260,1356-1367,1387-1402,3328,3407
+internal/engine/activation/activation_test.go
+  s_925d98967e0434::t_54b55e48521133 4,8,38-44,93-96,140-213,1466-1523
+  s_925d98967e0434::t_d1a600f10d5dd9 1524
+internal/plugin/enrich/entities_test.go
+  s_925d98967e0434::t_54b55e48521133 71
+internal/storage/keys/keys.go
+  s_925d98967e0434::t_54b55e48521133 11-12,33,42,51,63,79,91,101,111,121,130,138,149,159,169,181,194,205,232,242,251,262,273,283,299,310,323,334,369,381,391,404,414,426,435,446,473,483,495,506,534-542,546,556,565,576,586,599,608,621,632,643,654,666,678,690,702,713,725,736,746,755,771,783,788-822
+internal/engine/engine_lease_test.go
+  s_925d98967e0434::t_54b55e48521133 1-277
+internal/mcp/lease_handlers_test.go
+  s_925d98967e0434::t_54b55e48521133 1-85
+internal/storage/delete_caslock_test.go
+  s_925d98967e0434::t_54b55e48521133 1-107
+internal/storage/export.go
+  s_925d98967e0434::t_54b55e48521133 18,27-32,97,385,387,390,412-413,423-424,433-434,443-444,457
+cmd/muninn/vault_test.go
+  s_925d98967e0434::t_54b55e48521133 613-742
+internal/storage/association.go
+  s_925d98967e0434::t_54b55e48521133 13,526
+internal/mcp/convert_test.go
+  s_925d98967e0434::t_54b55e48521133 396-442
+internal/mcp/tools_test.go
+  s_925d98967e0434::t_54b55e48521133 10-11,41-45,47-49
+internal/engine/engine_entity_resolve.go
+  s_925d98967e0434::t_54b55e48521133 1-125
+internal/mcp/context.go
+  s_925d98967e0434::t_54b55e48521133 16-18,30-36,61-64,84-101,179-183
+internal/mcp/handlers_test.go
+  s_925d98967e0434::t_54b55e48521133 24,1283,1286-1290,1293,1365,1367,1394-1395,1459,1464-1469,1729,3571-3619
+go.mod
+  s_925d98967e0434::t_54b55e48521133 3
+internal/engine/engine_test.go
+  s_925d98967e0434::t_54b55e48521133 2428-2470
+docs/internals/invariants.md
+  s_925d98967e0434::t_54b55e48521133 1-71
+internal/plugin/admin_test.go
+  s_925d98967e0434::t_54b55e48521133 26,36,93-95
+  s_925d98967e0434::t_c439f7c6557b51 96-97
+internal/storage/vault_lifecycle.go
+  s_925d98967e0434::t_54b55e48521133 9,13-34,49,86,147-149,155,158,179-180
+internal/storage/wal_syncer.go
+  s_925d98967e0434::t_54b55e48521133 63,140-141
+  s_925d98967e0434::t_af5fb2f534763e 142
+internal/engine/engine_vault_test.go
+  s_925d98967e0434::t_54b55e48521133 204-205,226-227,686-816
+  s_925d98967e0434::t_2437f45b9092ab 817
+internal/transport/mbp/types.go
+  s_925d98967e0434::t_54b55e48521133 161-167,238-242
+internal/storage/entity.go
+  s_925d98967e0434::t_54b55e48521133 65,1041-1049,1051-1053,1055-1056,1064,1077-1078,1081
+internal/storage/migrate/migrate.go
+  s_925d98967e0434::t_54b55e48521133 41-75,94-114
+  s_925d98967e0434::t_607b35b8f7ad60 115
+internal/storage/migrate/v3_auth_prefix_relocate.go
+  s_925d98967e0434::t_54b55e48521133 1-201
+internal/mcp/auth_mk_test.go
+  s_925d98967e0434::t_54b55e48521133 67,95,114,126,138,149,166,176,187,206,226,240,353,361,517,567,574,640,650,659,670,680,691,702,803-810,860,885
+internal/plugin/enrich/pipeline.go
+  s_925d98967e0434::t_54b55e48521133 63-80,263-265,293-295,312-314,331-333
+internal/mcp/guide_test.go
+  s_925d98967e0434::t_54b55e48521133 111-128,250-285
+proto/gen/go/muninn/v1/service.pb.go
+  s_925d98967e0434::t_4d0ce70ab8396c 114-130,251-258
+proto/gen/go/muninn/v1/service_grpc.pb.go
+  s_925d98967e0434::t_90b94247b7ca20 19,22,80-88,107-115,186,189,217-220,229-232,364-383,424-443
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "872b32b524a66dff61d304acc4c2378e416a3916",
+  "prompts": {},
+  "sessions": {
+    "s_925d98967e0434": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_053a7aa6dffeXybma2kwyVfYzK",
+        "model": "mimo-v2.5-free"
+      },
+      "human_author": "yudaprama <yudhaprama@icloud.com>"
+    }
+  }
+}
