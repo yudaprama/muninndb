@@ -58,6 +58,9 @@ func (m *mockPluginStore) UpsertRelationship(_ context.Context, _ plugin.ULID, _
 func (m *mockPluginStore) HNSWInsert(_ context.Context, _ plugin.ULID, _ []float32) error {
 	return nil
 }
+func (m *mockPluginStore) CheckEmbedDim(_ context.Context, _ plugin.ULID, _ int) error {
+	return nil
+}
 func (m *mockPluginStore) AutoLinkByEmbedding(_ context.Context, _ plugin.ULID, _ []float32) error {
 	return nil
 }
@@ -304,5 +307,29 @@ func TestRelTypeToString_ZeroValueEmpty(t *testing.T) {
 	got := relTypeToString(storage.RelType(0))
 	if got != "" {
 		t.Errorf("relTypeToString(0) = %q, want empty string", got)
+	}
+}
+
+// TestWhereLeftOffEntryFromEngramMapsType verifies the muninn_where_left_off
+// projection carries the stored memory type — previously this surface dropped
+// it even though the engine hands the adapter full engrams.
+func TestWhereLeftOffEntryFromEngramMapsType(t *testing.T) {
+	eng := &storage.Engram{
+		ID:         storage.ULID{7},
+		Concept:    "typed entry",
+		MemoryType: storage.TypeGoal,
+		TypeLabel:  "quarterly_objective",
+	}
+	entry := whereLeftOffEntryFromEngram(eng)
+	if entry.Type != "goal" {
+		t.Errorf("Type = %q, want %q", entry.Type, "goal")
+	}
+	if entry.TypeLabel != "quarterly_objective" {
+		t.Errorf("TypeLabel = %q, want %q", entry.TypeLabel, "quarterly_objective")
+	}
+	// Zero value presents as "fact" — the field is always present.
+	plain := whereLeftOffEntryFromEngram(&storage.Engram{ID: storage.ULID{8}})
+	if plain.Type != "fact" {
+		t.Errorf("zero-value Type = %q, want %q", plain.Type, "fact")
 	}
 }

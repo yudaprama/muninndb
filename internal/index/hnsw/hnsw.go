@@ -83,17 +83,52 @@ type Index struct {
 	// (e.g. the registry's no-cache-on-error behaviour) without corrupting Pebble.
 	// Always nil in production.
 	loadErrHook func() error
+
+	// dim is the vault's established vector dimension; 0 until the first
+	// vector is inserted or loaded. On load it is taken from the vector with
+	// the smallest ID, so it is deterministic per process AND across restarts
+	// (and agrees with the storage layer's first-key derivation) even for a
+	// legacy vault that already holds mixed dimensions. Guarded by mu.
+	dim int
+
+	// loadErr is set by the registry when LoadFromPebble failed for this
+	// (uncached) index, so writes can refuse instead of treating the vault as
+	// empty — inserting into a vault whose real dimension is unknown could
+	// recreate the #582 split. Set once before the index escapes getOrCreate.
+	loadErr error
 }
 
-// Dim returns the vector dimension used by this index.
+// Dim returns the vault's established vector dimension.
 // Returns 0 if the index is empty (no vectors inserted yet).
 func (idx *Index) Dim() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	for _, node := range idx.nodes {
-		return len(node.vec)
+	return idx.dim
+}
+
+// LoadError reports the load failure recorded for this index, if any.
+func (idx *Index) LoadError() error {
+	return idx.loadErr
+}
+
+// establishDim atomically checks a vector's dimension against the vault's
+// established dimension, establishing it on first use — check and
+// establishment happen under one lock, so two concurrent first inserts with
+// different dimensions cannot both pass (one establishes, the other is
+// refused). The established dimension deliberately survives the deletion of
+// the vector that set it: refusing until a reload/reset is safer than letting
+// the dimension flap.
+func (idx *Index) establishDim(n int) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.dim == 0 {
+		idx.dim = n
+		return nil
 	}
-	return 0
+	if idx.dim != n {
+		return &DimMismatchError{Got: n, Want: idx.dim}
+	}
+	return nil
 }
 
 // Tombstone marks a node as deleted so it is skipped in future Search results.
@@ -453,11 +488,15 @@ func (idx *Index) Insert(id [16]byte, vector []float32) {
 			maxConn := maxConnections(l)
 			if len(nbNode.layers[l]) > maxConn {
 				// Prune: keep the maxConn NEAREST neighbors by distance to this
-				// node's vector. Plain truncation ([:maxConn]) would always drop
-				// the just-appended edge once the layer is full — late-inserted
-				// nodes then accumulate zero in-edges and become unreachable,
-				// silently degrading the graph as the vault grows.
-				nbNode.layers[l] = idx.pruneNeighbors(nbNode.vec, nbNode.layers[l], maxConn)
+				// node's vector — but always retain the just-appended edge. The
+				// new node's only path into the graph is a back-edge from one of
+				// these neighbors; in a dense region every neighbor's list is
+				// already full of mutually-closer nodes, so distance-only
+				// pruning would drop the fresh edge at every neighbor and the
+				// node would be born with zero in-edges — permanently invisible
+				// to graph search, since future inserts can only discover
+				// neighbors by traversing the graph (#620).
+				nbNode.layers[l] = idx.pruneNeighbors(nbNode.vec, nbNode.layers[l], maxConn, id)
 			}
 			nbNode.mu.Unlock()
 			mutated[nb.id] = nbNode
@@ -484,9 +523,13 @@ func (idx *Index) Insert(id [16]byte, vector []float32) {
 
 // pruneNeighbors keeps the keep nearest neighbor ids to baseVec, measured by
 // cosine distance. Neighbors whose node or vector is missing sort last so they
-// are pruned first. Caller must hold the owning node's mutex; neighbor vectors
-// are immutable after insert, so reading them without their locks is safe.
-func (idx *Index) pruneNeighbors(baseVec []float32, ids [][16]byte, keep int) [][16]byte {
+// are pruned first. The protect id, when present in ids, is always retained
+// (it takes one of the keep slots): connectivity of a just-linked node beats
+// the marginal distance optimality of the edge it displaces. Pass the zero
+// value for no protection — engram ids are ULIDs, which are never zero.
+// Caller must hold the owning node's mutex; neighbor vectors are immutable
+// after insert, so reading them without their locks is safe.
+func (idx *Index) pruneNeighbors(baseVec []float32, ids [][16]byte, keep int, protect [16]byte) [][16]byte {
 	if len(ids) <= keep {
 		return ids
 	}
@@ -496,6 +539,10 @@ func (idx *Index) pruneNeighbors(baseVec []float32, ids [][16]byte, keep int) []
 	}
 	scored := make([]nd, 0, len(ids))
 	for _, nid := range ids {
+		if nid == protect {
+			scored = append(scored, nd{nid, -1.0}) // always sorts first
+			continue
+		}
 		n := idx.nodes[nid]
 		if n == nil || len(n.vec) == 0 || len(baseVec) == 0 {
 			scored = append(scored, nd{nid, 2.0}) // missing vector: prune first
@@ -783,11 +830,118 @@ func (idx *Index) LoadFromPebble() error {
 		}
 	}
 
+	// Persisted neighbor lists are written asynchronously with NoSync and can be
+	// stale or degenerate (observed in production: an entry point whose every
+	// neighbor on every layer was itself — one such node at the graph apex makes
+	// the entire vault unreachable for vector search while the rest of the
+	// persisted graph looks healthy). Restoring structure we cannot trust is
+	// worse than rebuilding from the vectors, which ARE reliable (written once,
+	// validated on read). So: check connectivity from the restored entry point
+	// and rebuild the graph in memory from the vectors when the structure is
+	// broken, then re-persist the healthy neighbor lists.
+	reachable := bfsReachable(tempNodes, tempEntryPoint)
+	rebuilt := false
+	if vectorCount > 1 && reachable*2 < vectorCount {
+		slog.Warn("hnsw: restored graph is disconnected — rebuilding from vectors",
+			"vault", idx.ws,
+			"nodes", len(tempNodes),
+			"reachable_from_entry", reachable,
+		)
+		tmp := New(idx.db, idx.ws)
+		tmp.efConstruction = idx.efConstruction
+		tmp.efSearch = idx.efSearch
+		// Deterministic order: ULIDs ascending (map iteration is random).
+		ids := make([][16]byte, 0, len(tempNodes))
+		for id, n := range tempNodes {
+			if n.vec != nil {
+				ids = append(ids, id)
+			}
+		}
+		sort.Slice(ids, func(i, j int) bool { return string(ids[i][:]) < string(ids[j][:]) })
+		for _, id := range ids {
+			tmp.Insert(id, tempNodes[id].vec)
+		}
+		tmp.persistWg.Wait() // flush re-persisted (healthy) neighbor lists
+		tmp.mu.Lock()
+		tempNodes = tmp.nodes
+		tempMaxLevel = tmp.maxLevel
+		tempEntryPoint = tmp.entryPoint
+		tmp.mu.Unlock()
+		reachable = bfsReachable(tempNodes, tempEntryPoint)
+		rebuilt = true
+	}
+
+	// A graph can also come back with a SMALL unreachable remainder — nodes
+	// whose every in-edge was pruned away after they were persisted (#620).
+	// That never trips the majority-disconnected rebuild above, so without
+	// repair the orphans are permanent: graph search can't reach them, and
+	// inserts discover neighbors by graph search, so nothing ever re-links
+	// them. Re-link each orphan the same way a fresh insert would, then
+	// re-persist. Cost is one insert per orphan — negligible next to a full
+	// rebuild, and zero when the graph is healthy.
+	repaired := 0
+	if vectorCount > 1 && !rebuilt {
+		reach := bfsReachableSet(tempNodes, tempEntryPoint)
+		orphans := make([][16]byte, 0)
+		for id, n := range tempNodes {
+			if n.vec != nil && !reach[id] {
+				orphans = append(orphans, id)
+			}
+		}
+		if len(orphans) > 0 {
+			// Deterministic order: ULIDs ascending (map iteration is random).
+			sort.Slice(orphans, func(i, j int) bool { return string(orphans[i][:]) < string(orphans[j][:]) })
+			tmp := New(idx.db, idx.ws)
+			tmp.efConstruction = idx.efConstruction
+			tmp.efSearch = idx.efSearch
+			tmp.nodes = tempNodes
+			tmp.maxLevel = tempMaxLevel
+			tmp.entryPoint = tempEntryPoint
+			for _, id := range orphans {
+				old := tempNodes[id]
+				// Drop the orphan's stale persisted layer lists first: the
+				// re-insert draws a fresh level, and leftover higher-layer keys
+				// would resurrect ghost edges on the next load.
+				for l := range old.layers {
+					if err := idx.db.Delete(keys.HNSWNodeKey(idx.ws, id, uint8(l)), pebble.NoSync); err != nil {
+						slog.Warn("hnsw: failed to clear stale orphan layer", "error", err)
+					}
+				}
+				delete(tmp.nodes, id)
+				tmp.Insert(id, old.vec)
+				repaired++
+			}
+			tmp.persistWg.Wait() // flush re-persisted neighbor lists
+			tmp.mu.Lock()
+			tempNodes = tmp.nodes
+			tempMaxLevel = tmp.maxLevel
+			tempEntryPoint = tmp.entryPoint
+			tmp.mu.Unlock()
+			reachable = bfsReachable(tempNodes, tempEntryPoint)
+		}
+	}
+
+	// Derive the vault's dimension from the vector with the smallest ID —
+	// deterministic across calls and restarts (map iteration is random), and
+	// consistent with the storage layer's first-embedding-key derivation.
+	tempDim := 0
+	var dimID [16]byte
+	for id, node := range tempNodes {
+		if node.vec == nil {
+			continue
+		}
+		if tempDim == 0 || string(id[:]) < string(dimID[:]) {
+			tempDim = len(node.vec)
+			dimID = id
+		}
+	}
+
 	// Only apply to index if load completed successfully
 	idx.mu.Lock()
 	idx.nodes = tempNodes
 	idx.maxLevel = tempMaxLevel
 	idx.entryPoint = tempEntryPoint
+	idx.dim = tempDim
 	idx.mu.Unlock()
 
 	slog.Info("hnsw: loaded graph from pebble",
@@ -795,9 +949,44 @@ func (idx *Index) LoadFromPebble() error {
 		"nodes", len(tempNodes),
 		"vectors", vectorCount,
 		"duration", time.Since(start),
+		"reachable_from_entry", reachable,
+		"rebuilt", rebuilt,
+		"repaired", repaired,
 	)
 
 	return nil
+}
+
+// bfsReachable counts the nodes reachable from the entry point over layer-0
+// edges. A healthy graph reaches ~all nodes; a small count on a populated graph
+// indicates a disconnected (e.g. self-looped) entry point.
+func bfsReachable(nodes map[[16]byte]*HNSWNode, entry [16]byte) int {
+	return len(bfsReachableSet(nodes, entry))
+}
+
+// bfsReachableSet returns the set of node ids reachable from the entry point
+// over layer-0 edges.
+func bfsReachableSet(nodes map[[16]byte]*HNSWNode, entry [16]byte) map[[16]byte]bool {
+	if nodes[entry] == nil {
+		return nil
+	}
+	seen := map[[16]byte]bool{entry: true}
+	queue := [][16]byte{entry}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		n := nodes[cur]
+		if n == nil || len(n.layers) == 0 {
+			continue
+		}
+		for _, nb := range n.layers[0] {
+			if !seen[nb] && nodes[nb] != nil {
+				seen[nb] = true
+				queue = append(queue, nb)
+			}
+		}
+	}
+	return seen
 }
 
 func min(a, b int) int {

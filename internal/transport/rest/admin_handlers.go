@@ -227,6 +227,67 @@ func (s *Server) handleRevokeAPIKey(authStore *auth.Store) http.HandlerFunc {
 	}
 }
 
+// handleListCapabilities lists cap_ capabilities for a vault (RedTeam finding
+// SIGNIFICANT #3). Mirrors handleListAPIKeys: admin-gated, StorageHash stripped.
+// GET /api/admin/vaults/{name}/capabilities
+func (s *Server) handleListCapabilities(authStore *auth.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vault := r.PathValue("name")
+		if vault == "" {
+			vault = r.URL.Query().Get("vault")
+		}
+		if vault == "" {
+			vault = "default"
+		}
+		if !isValidVaultName(vault) {
+			s.sendError(r, w, http.StatusBadRequest, ErrInvalidEngram, "invalid vault name")
+			return
+		}
+		caps, err := authStore.ListCapabilities(vault)
+		if err != nil {
+			s.sendError(r, w, http.StatusInternalServerError, ErrStorageError, "failed to list capabilities")
+			return
+		}
+		// Never leak the storage hash to API consumers (matches handleListAPIKeys posture).
+		for i := range caps {
+			caps[i].StorageHash = nil
+		}
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{"capabilities": caps})
+	}
+}
+
+// handleRevokeCapability revokes a cap_ capability by its display ID (RedTeam
+// finding SIGNIFICANT #3). Mirrors handleRevokeAPIKey: admin-gated.
+// DELETE /api/admin/vaults/{name}/capabilities/{capID}
+func (s *Server) handleRevokeCapability(authStore *auth.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vault := r.PathValue("name")
+		capID := r.PathValue("capID")
+		if vault == "" {
+			s.sendError(r, w, http.StatusBadRequest, ErrInvalidEngram, "vault name required")
+			return
+		}
+		if !isValidVaultName(vault) {
+			s.sendError(r, w, http.StatusBadRequest, ErrInvalidEngram, "invalid vault name")
+			return
+		}
+		if capID == "" {
+			s.sendError(r, w, http.StatusBadRequest, ErrInvalidEngram, "capability id required")
+			return
+		}
+		if err := authStore.RevokeCapability(vault, capID); err != nil {
+			if errors.Is(err, auth.ErrCapabilityNotFound) {
+				s.sendError(r, w, http.StatusNotFound, ErrEngramNotFound, err.Error())
+				return
+			}
+			s.sendError(r, w, http.StatusInternalServerError, ErrStorageError, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{"revoked": capID})
+		s.EmitAudit(r, "capability.revoke", "capability", capID, "ok", nil)
+	}
+}
+
 func (s *Server) handleChangeAdminPassword(authStore *auth.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -288,6 +349,16 @@ func (s *Server) handleSetVaultConfig(authStore *auth.Store) http.HandlerFunc {
 		if err := authStore.SetVaultConfig(cfg); err != nil {
 			s.sendError(r, w, http.StatusInternalServerError, ErrStorageError, err.Error())
 			return
+		}
+		// Register the vault in the Pebble name index so admin operations
+		// (reindex-fts, vault export) can find it before the first engram is written.
+		type vaultNameRegistrar interface {
+			RegisterVaultName(name string) error
+		}
+		if reg, ok := s.engine.(vaultNameRegistrar); ok {
+			if rErr := reg.RegisterVaultName(cfg.Name); rErr != nil {
+				slog.Warn("vault create: failed to register vault name", "vault", cfg.Name, "err", rErr)
+			}
 		}
 		s.sendJSON(w, http.StatusOK, cfg)
 		s.EmitAudit(r, "vault.config_update", "vault", cfg.Name, "ok", nil)

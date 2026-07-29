@@ -1,7 +1,10 @@
 package activation
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -412,7 +415,13 @@ func newInternalStubStore() *internalStubStore {
 
 func (s *internalStubStore) addEngram(eng *storage.Engram) {
 	if eng.ID == (storage.ULID{}) {
-		eng.ID = storage.NewULID()
+		// Mirror PebbleStore.WriteEngram: derive the ULID from CreatedAt when set
+		// so the tag/time indexes are ULID-time-ordered exactly as in production.
+		if !eng.CreatedAt.IsZero() {
+			eng.ID = storage.NewULIDWithTime(eng.CreatedAt)
+		} else {
+			eng.ID = storage.NewULID()
+		}
 	}
 	if eng.Confidence == 0 {
 		eng.Confidence = 1.0
@@ -457,6 +466,10 @@ func (s *internalStubStore) GetEngrams(_ context.Context, _ [8]byte, ids []stora
 	return out, nil
 }
 
+func (s *internalStubStore) GetLeases(_ context.Context, _ [8]byte, ids []storage.ULID) ([]storage.Lease, error) {
+	return make([]storage.Lease, len(ids)), nil
+}
+
 func (s *internalStubStore) GetAssociations(_ context.Context, _ [8]byte, ids []storage.ULID, maxPerNode int) (map[storage.ULID][]storage.Association, error) {
 	result := make(map[storage.ULID][]storage.Association)
 	for _, id := range ids {
@@ -484,6 +497,80 @@ func (s *internalStubStore) EngramLastAccessNs(_ [8]byte, id storage.ULID) int64
 
 func (s *internalStubStore) EngramIDsByCreatedRange(_ context.Context, _ [8]byte, since, until time.Time, limit int) ([]storage.ULID, error) {
 	return nil, nil
+}
+
+// ListByTagInRange scans the full engram set for the tag within [since, until]
+// and returns matches newest-first (ULID descending), truncated at limit —
+// consistent with the real PebbleStore's newest-first / oldest-truncated order.
+func (s *internalStubStore) ListByTagInRange(_ context.Context, _ [8]byte, tag string, since, until time.Time, limit int) ([]storage.ULID, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var matched []storage.ULID
+	for id, eng := range s.engrams {
+		hasTag := false
+		for _, t := range eng.Tags {
+			if t == tag {
+				hasTag = true
+				break
+			}
+		}
+		if !hasTag {
+			continue
+		}
+		if (!since.IsZero() && eng.CreatedAt.Before(since)) || (!until.IsZero() && eng.CreatedAt.After(until)) {
+			continue
+		}
+		matched = append(matched, id)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		return bytes.Compare(matched[i][:], matched[j][:]) > 0
+	})
+	if len(matched) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
+}
+
+// ListByTagsAllInRange returns engrams carrying EVERY tag, newest-first within
+// [since, until], with limit bounding the OUTPUT (exact set intersection over the
+// full engram set — mirrors the real store's hash-level stream intersection minus
+// collision false positives).
+func (s *internalStubStore) ListByTagsAllInRange(_ context.Context, _ [8]byte, tags []string, since, until time.Time, limit int) ([]storage.ULID, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var matched []storage.ULID
+	for id, eng := range s.engrams {
+		all := true
+		for _, tag := range tags {
+			has := false
+			for _, t := range eng.Tags {
+				if t == tag {
+					has = true
+					break
+				}
+			}
+			if !has {
+				all = false
+				break
+			}
+		}
+		if !all {
+			continue
+		}
+		if (!since.IsZero() && eng.CreatedAt.Before(since)) || (!until.IsZero() && eng.CreatedAt.After(until)) {
+			continue
+		}
+		matched = append(matched, id)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		return bytes.Compare(matched[i][:], matched[j][:]) > 0
+	})
+	if len(matched) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
 }
 
 func (s *internalStubStore) RestoreArchivedEdgesTransitive(_ context.Context, _ [8]byte, _ storage.ULID, _, _ int) ([]storage.ULID, error) {
@@ -2275,5 +2362,61 @@ func TestPhase6Score_MetaFilterExcludes(t *testing.T) {
 		if a.Engram.State != storage.StateActive {
 			t.Errorf("meta filter should only allow StateActive, got %v", a.Engram.State)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// phase1 BM25 fallback: embedding backend down → no error, empty embedding
+// ---------------------------------------------------------------------------
+
+// failingEmbedder simulates an unreachable embedding backend.
+type failingEmbedder struct{ err error }
+
+func (e *failingEmbedder) Embed(_ context.Context, _ []string) ([]float32, error) {
+	return nil, e.err
+}
+
+func (e *failingEmbedder) Tokenize(text string) []string { return strings.Fields(text) }
+
+// minimalHNSW is a non-nil HNSW stub so phase1's embedder branch is entered.
+type minimalHNSW struct{}
+
+func (h *minimalHNSW) Search(_ context.Context, _ [8]byte, _ []float32, _ int) ([]ScoredID, error) {
+	return nil, nil
+}
+
+// TestPhase1_EmbedError_DegradesToBM25 verifies that when the embedding
+// backend returns an error (e.g. connection refused), phase1 returns a
+// result with no embedding (BM25-only path) instead of propagating the error.
+func TestPhase1_EmbedError_DegradesToBM25(t *testing.T) {
+	store := newInternalStubStore()
+	embedErr := errors.New("dial tcp 127.0.0.1:11435: connect: connection refused")
+
+	e := &ActivationEngine{
+		store:    store,
+		hnsw:     &minimalHNSW{},
+		embedder: &failingEmbedder{err: embedErr},
+		assocLog: &ActivationLog{},
+		logCh:    make(chan logItem, 4096),
+		logDone:  make(chan struct{}),
+	}
+	go e.drainLog()
+
+	req := &ActivateRequest{
+		VaultID: 1,
+		Context: []string{"test recall context"},
+	}
+	result, err := e.phase1(context.Background(), req)
+	if err != nil {
+		t.Fatalf("phase1 should not return error when embed fails: %v", err)
+	}
+	if result == nil {
+		t.Fatal("phase1 returned nil result")
+	}
+	if len(result.embedding) != 0 {
+		t.Errorf("expected empty embedding on embed failure, got len=%d", len(result.embedding))
+	}
+	if result.queryStr != "test recall context" {
+		t.Errorf("queryStr = %q, want %q", result.queryStr, "test recall context")
 	}
 }

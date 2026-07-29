@@ -3,7 +3,7 @@ package mcp
 func allToolDefinitions() []ToolDefinition {
 	vaultProp := map[string]any{
 		"type":        "string",
-		"description": "Vault name to scope the operation (default: 'default'). Optional when connected via a vault-pinned MCP session.",
+		"description": "Vault name to scope the operation (default: 'default'). Optional when authenticating via a vault-pinned mk_ key.",
 	}
 	// entityTypeEnum lists the 14 recognised entity types (the single source of
 	// truth is validEntityTypes in handlers.go). Any other value is coerced to
@@ -214,6 +214,14 @@ func allToolDefinitions() []ToolDefinition {
 						"type":        "boolean",
 						"description": "When true, each result includes an annotations object with staleness, conflict, and supersession metadata. Default false.",
 					},
+					"caller": map[string]any{
+						"type":        "string",
+						"description": "Your ownership-lease identity (conventionally '{host}:{session}'). Memories checked out by a live lease owned by someone else are hidden; your own leased memories are returned normally. See muninn_claim.",
+					},
+					"include_leased": map[string]any{
+						"type":        "boolean",
+						"description": "When true, disables work-queue lease filtering so memories checked out by other owners are also returned (admin/debugging). Default false.",
+					},
 				},
 				"required": []string{"context"},
 			},
@@ -320,7 +328,7 @@ func allToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name:        "muninn_session",
-			Description: "Get a summary of recent memory activity since a timestamp.",
+			Description: "Get a summary of recent memory activity since a timestamp — vault-wide: in a vault shared by multiple users or agents this includes other users' activity (admin/audit use there).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -404,6 +412,47 @@ func allToolDefinitions() []ToolDefinition {
 					"reason": map[string]any{"type": "string", "description": "Optional: why the state is being changed."},
 				},
 				"required": []string{"id", "state"},
+			},
+		},
+		{
+			Name:        "muninn_compare_and_set",
+			Description: "Atomically transition a memory's lifecycle state only if it currently matches an expected state (compare-and-set). Use to avoid clobbering concurrent transitions. Returns whether it applied and the current state/owner on conflict.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"vault":        vaultProp,
+					"id":           map[string]any{"type": "string", "description": "ID of the memory to update."},
+					"expect_state": map[string]any{"type": "string", "enum": []string{"planning", "active", "paused", "blocked", "completed", "cancelled", "archived"}, "description": "Only apply if the current state equals this. Omit to skip the guard."},
+					"set_state":    map[string]any{"type": "string", "enum": []string{"planning", "active", "paused", "blocked", "completed", "cancelled", "archived"}, "description": "The new lifecycle state to set when the guard holds."},
+				},
+				"required": []string{"id", "set_state"},
+			},
+		},
+		{
+			Name:        "muninn_claim",
+			Description: "Atomically claim an advisory ownership lease on a memory so a fleet of agents can treat vault memories as a work queue and avoid double-processing the same item. Returns status acquired (was free), refreshed (already yours), reclaimed (took over a stale lease) or conflict (a live foreign owner holds it). A live foreign lease is never overwritten.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"vault":    vaultProp,
+					"id":       map[string]any{"type": "string", "description": "ID of the memory to claim."},
+					"owner":    map[string]any{"type": "string", "description": "Stable holder identity, unique across hosts and sessions, conventionally '{host}:{session}'."},
+					"ttl_secs": map[string]any{"type": "integer", "description": "Lease duration in seconds. The lease goes stale once this elapses without a refresh; pick a value that fits the unit of work."},
+				},
+				"required": []string{"id", "owner", "ttl_secs"},
+			},
+		},
+		{
+			Name:        "muninn_release",
+			Description: "Release an ownership lease held by owner, making the memory immediately visible to recall again without waiting for the TTL. Idempotent: releasing an unleased memory, or one held by someone else, is a no-op.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"vault": vaultProp,
+					"id":    map[string]any{"type": "string", "description": "ID of the memory to release."},
+					"owner": map[string]any{"type": "string", "description": "The holder identity used when the lease was claimed."},
+				},
+				"required": []string{"id", "owner"},
 			},
 		},
 		{
@@ -516,7 +565,7 @@ func allToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name:        "muninn_where_left_off",
-			Description: "Surface what was being worked on at the end of the last session. Returns the most recently accessed active memories, sorted by recency. Call this at session start to orient yourself before any user queries.",
+			Description: "Surface what was being worked on at the end of the last session. Returns the most recently accessed active memories, sorted by recency — vault-wide: in a vault shared by multiple users or agents this includes other users' activity, so prefer a tag-scoped muninn_recall there. In single-user vaults, call at session start to orient yourself before any user queries.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -532,7 +581,7 @@ func allToolDefinitions() []ToolDefinition {
 		// Entity reverse index tool
 		{
 			Name:        "muninn_find_by_entity",
-			Description: "Return all memories that mention a given named entity. Uses the entity reverse index for fast O(matches) lookup.",
+			Description: "Return all memories that mention a given named entity. Uses the entity reverse index for fast O(matches) lookup. When the exact name has no matches, vault entity names are fuzzy-matched by token overlap (case/articles/separators ignored, e.g. 'knock' finds 'The Knock') and the response reports the resolution via matched_entity + fuzzy.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -863,6 +912,19 @@ func allToolDefinitions() []ToolDefinition {
 					},
 				},
 				"required": []string{"id", "trust"},
+			},
+		},
+		// RFC #597: privileged workflow-vault creation (recursion-guarded in dispatchToolCall).
+		{
+			Name:        "muninn_create_workflow_vault",
+			Description: "Create a shared working vault for an agentic workflow and mint a scoped, TTL'd capability token a worker agent can use to access it. The vault uses the `working` preset (default cognition + 7-day auto-evaporation) with multi_user enabled. Requires a full-mode mk_ key and the MUNINN_AGENT_VAULT_CREATE opt-in. The returned capability_secret is shown once — distribute it to worker agents out-of-band. Recursion-safe: a capability cannot call this tool.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":      map[string]any{"type": "string", "description": "Vault name (optional; auto-generates wf-<8hex> if omitted). MUST start with 'wf-' and be 1-64 lowercase alphanum/hyphen/underscore. Names lacking the wf- prefix are rejected (prevents cross-vault clobber)."},
+					"label":     map[string]any{"type": "string", "default": "agent-minted", "description": "Label stamped on the minted capability (for audit/listing)."},
+					"ttl_hours": map[string]any{"type": "integer", "default": 168, "minimum": float64(1), "maximum": float64(168), "description": "Capability lifetime in hours (1-168; default 168 = 7d, matching the working preset retention). Sub-hour values floor to 1; values above 168 clamp to 168."},
+				},
 			},
 		},
 	}

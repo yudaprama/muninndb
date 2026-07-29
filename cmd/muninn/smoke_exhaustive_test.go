@@ -32,6 +32,9 @@ var allMCPTools = []string{
 	"muninn_traverse",
 	"muninn_explain",
 	"muninn_state",
+	"muninn_compare_and_set",
+	"muninn_claim",
+	"muninn_release",
 	"muninn_list_deleted",
 	"muninn_retry_enrich",
 	"muninn_get_enrichment_candidates",
@@ -48,6 +51,7 @@ var allMCPTools = []string{
 	"muninn_add_child",
 	"muninn_similar_entities",
 	"muninn_merge_entity",
+	"muninn_create_workflow_vault",
 	"muninn_replay_enrichment",
 	"muninn_provenance",
 	"muninn_entity_timeline",
@@ -561,6 +565,86 @@ func TestSmoke_AllMCPTools(t *testing.T) {
 		}
 	})
 
+	// The lease tools each seed their own memory so they stay order-independent.
+	t.Run("muninn_compare_and_set", func(t *testing.T) {
+		seed := mcpTool(t, tok, "muninn_remember", map[string]any{
+			"vault":   vault,
+			"concept": "cas smoke",
+			"content": "compare-and-set smoke target",
+		})
+		id, _ := seed["id"].(string)
+		if id == "" {
+			t.Fatalf("cas seed: expected id, got: %v", seed)
+		}
+		// A fresh memory is active; guarding active->completed must apply.
+		result := mcpTool(t, tok, "muninn_compare_and_set", map[string]any{
+			"vault":        vault,
+			"id":           id,
+			"expect_state": "active",
+			"set_state":    "completed",
+		})
+		if errVal, hasErr := result["error"]; hasErr {
+			t.Errorf("muninn_compare_and_set returned error field: %v", errVal)
+		}
+		if applied, _ := result["applied"].(bool); !applied {
+			t.Errorf("expected applied=true guarding active->completed, got: %v", result)
+		}
+	})
+
+	t.Run("muninn_claim", func(t *testing.T) {
+		seed := mcpTool(t, tok, "muninn_remember", map[string]any{
+			"vault":   vault,
+			"concept": "claim smoke",
+			"content": "claim smoke target",
+		})
+		id, _ := seed["id"].(string)
+		if id == "" {
+			t.Fatalf("claim seed: expected id, got: %v", seed)
+		}
+		result := mcpTool(t, tok, "muninn_claim", map[string]any{
+			"vault":    vault,
+			"id":       id,
+			"owner":    "smoke-host:sess1",
+			"ttl_secs": 60,
+		})
+		if errVal, hasErr := result["error"]; hasErr {
+			t.Errorf("muninn_claim returned error field: %v", errVal)
+		}
+		if status, _ := result["status"].(string); status != "acquired" {
+			t.Errorf("expected status acquired on first claim, got: %v", result["status"])
+		}
+	})
+
+	t.Run("muninn_release", func(t *testing.T) {
+		seed := mcpTool(t, tok, "muninn_remember", map[string]any{
+			"vault":   vault,
+			"concept": "release smoke",
+			"content": "release smoke target",
+		})
+		id, _ := seed["id"].(string)
+		if id == "" {
+			t.Fatalf("release seed: expected id, got: %v", seed)
+		}
+		// Claim it first so the owner has something to release.
+		mcpTool(t, tok, "muninn_claim", map[string]any{
+			"vault":    vault,
+			"id":       id,
+			"owner":    "smoke-host:sess1",
+			"ttl_secs": 60,
+		})
+		result := mcpTool(t, tok, "muninn_release", map[string]any{
+			"vault": vault,
+			"id":    id,
+			"owner": "smoke-host:sess1",
+		})
+		if errVal, hasErr := result["error"]; hasErr {
+			t.Errorf("muninn_release returned error field: %v", errVal)
+		}
+		if released, _ := result["released"].(bool); !released {
+			t.Errorf("expected released=true for the lease owner, got: %v", result)
+		}
+	})
+
 	t.Run("muninn_list_deleted", func(t *testing.T) {
 		result := mcpTool(t, tok, "muninn_list_deleted", map[string]any{
 			"vault": vault,
@@ -869,6 +953,22 @@ func TestSmoke_AllMCPTools(t *testing.T) {
 		})
 		if errVal, hasErr := result["error"]; hasErr {
 			t.Errorf("muninn_entities returned error field: %v", errVal)
+		}
+	})
+
+	t.Run("muninn_create_workflow_vault", func(t *testing.T) {
+		// Privileged tool: requires opt-in (MUNINN_AGENT_VAULT_CREATE) + a full-mode
+		// mk_ key. The smoke daemon uses a static token with opt-in off, so the guard
+		// must reject this call. Use mcpToolNoFail (the tool legitimately errors here)
+		// and assert the opt-in-disabled rejection fired — proves the gate works.
+		_, err := mcpToolNoFail(t, tok, "muninn_create_workflow_vault", map[string]any{
+			"name": "wf-smoke",
+		})
+		if err == nil {
+			t.Fatalf("muninn_create_workflow_vault: expected guard rejection (static token, opt-in off), got success")
+		}
+		if !strings.Contains(err.Error(), "disabled") {
+			t.Errorf("muninn_create_workflow_vault: unexpected error %q (want the opt-in-disabled rejection)", err)
 		}
 	})
 }

@@ -74,6 +74,8 @@ func main() {
 		runDoctor(rest)
 	case "exec":
 		runExec(rest)
+	case "remember":
+		runRemember(rest)
 	case "dream":
 		runDream(rest)
 	case "backup":
@@ -125,6 +127,23 @@ func main() {
 		}
 		if sub == "audit" || strings.HasPrefix(sub, "audit:") {
 			runAudit(rest)
+			return
+		}
+		// "exec read"/"logs 50" join to "exec:read"/"logs:50" like every
+		// two-word form; without these routes the joined tokens fell through
+		// to Unknown command while the help text documented them as valid.
+		if strings.HasPrefix(sub, "exec:") {
+			runExec(rest)
+			return
+		}
+		// "remember something" joins to "remember:something"; route it so the
+		// FlagSet can print a real usage error instead of Unknown command.
+		if strings.HasPrefix(sub, "remember:") {
+			runRemember(rest)
+			return
+		}
+		if strings.HasPrefix(sub, "logs:") {
+			runLogs(rest)
 			return
 		}
 		if strings.HasPrefix(sub, "cluster:") {

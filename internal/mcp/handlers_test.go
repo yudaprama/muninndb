@@ -21,7 +21,7 @@ import (
 
 // newTestServerWith creates a server backed by the supplied engine.
 func newTestServerWith(eng EngineInterface) *MCPServer {
-	return New(":0", eng, "", nil, nil)
+	return New(":0", eng, "", nil, nil, nil)
 }
 
 // extractInnerJSON decodes the MCP textContent envelope and returns the inner
@@ -1280,14 +1280,17 @@ func TestHandleStatus_IncludesEnrichmentMode(t *testing.T) {
 
 type findByEntityEngine struct{ fakeEngine }
 
-func (f *findByEntityEngine) FindByEntity(_ context.Context, _, name string, _ int) ([]*storage.Engram, error) {
+func (f *findByEntityEngine) FindByEntity(_ context.Context, _, name string, _ int) (*engine.FindByEntityResult, error) {
 	if name == "PostgreSQL" {
 		id := storage.NewULID()
-		return []*storage.Engram{
-			{ID: id, Concept: "DB choice", Summary: "Chose PostgreSQL"},
+		return &engine.FindByEntityResult{
+			Engrams: []*storage.Engram{
+				{ID: id, Concept: "DB choice", Summary: "Chose PostgreSQL"},
+			},
+			MatchedEntity: "PostgreSQL",
 		}, nil
 	}
-	return nil, nil
+	return &engine.FindByEntityResult{}, nil
 }
 
 func TestHandleFindByEntity_HappyPath(t *testing.T) {
@@ -1359,9 +1362,9 @@ type findByEntityCapturingEngine struct {
 	lastLimit int
 }
 
-func (f *findByEntityCapturingEngine) FindByEntity(_ context.Context, _, _ string, limit int) ([]*storage.Engram, error) {
+func (f *findByEntityCapturingEngine) FindByEntity(_ context.Context, _, _ string, limit int) (*engine.FindByEntityResult, error) {
 	f.lastLimit = limit
-	return []*storage.Engram{}, nil
+	return &engine.FindByEntityResult{}, nil
 }
 
 func TestHandleFindByEntity_LimitCapped(t *testing.T) {
@@ -1388,6 +1391,8 @@ func (e *whereLeftOffEngine) WhereLeftOff(_ context.Context, _ string, _ int) ([
 			Summary:    "working on feature X",
 			LastAccess: time.Now().Add(-5 * time.Minute),
 			State:      "active",
+			Type:       "task",
+			TypeLabel:  "feature_work",
 		},
 		{
 			ID:         "entry-2",
@@ -1451,10 +1456,16 @@ func TestHandleWhereLeftOff_ResponseShape(t *testing.T) {
 	if !ok {
 		t.Fatal("memories[0] is not an object")
 	}
-	for _, field := range []string{"id", "concept", "last_access", "state"} {
+	for _, field := range []string{"id", "concept", "last_access", "state", "type"} {
 		if _, ok := entry[field]; !ok {
 			t.Errorf("memory entry missing field: %q", field)
 		}
+	}
+	if entry["type"] != "task" {
+		t.Errorf("entry type = %v, want %q", entry["type"], "task")
+	}
+	if entry["type_label"] != "feature_work" {
+		t.Errorf("entry type_label = %v, want %q", entry["type_label"], "feature_work")
 	}
 
 	count, ok := content["count"].(float64)
@@ -1715,7 +1726,7 @@ func (e *slowIdempotentEngine) GetEnrichmentMode(ctx context.Context) string {
 func (e *slowIdempotentEngine) WhereLeftOff(ctx context.Context, vault string, limit int) ([]WhereLeftOffEntry, error) {
 	return (&fakeEngine{}).WhereLeftOff(ctx, vault, limit)
 }
-func (e *slowIdempotentEngine) FindByEntity(ctx context.Context, vault, entityName string, limit int) ([]*storage.Engram, error) {
+func (e *slowIdempotentEngine) FindByEntity(ctx context.Context, vault, entityName string, limit int) (*engine.FindByEntityResult, error) {
 	return (&fakeEngine{}).FindByEntity(ctx, vault, entityName, limit)
 }
 func (e *slowIdempotentEngine) SetEntityState(ctx context.Context, entityName, state, mergedInto, entityType string) error {
@@ -3555,5 +3566,54 @@ func TestHandleRecall_AnnotateFalse_NoAnnotations(t *testing.T) {
 	mem0 := mems[0].(map[string]interface{})
 	if _, hasAnn := mem0["annotations"]; hasAnn {
 		t.Error("annotations should be absent when annotate=false (or not set)")
+	}
+}
+
+// multiUserEngine reports a multi-user (shared) vault from GetVaultPlasticity.
+type multiUserEngine struct{ fakeEngine }
+
+func (e *multiUserEngine) GetVaultPlasticity(_ context.Context, _ string) (*auth.ResolvedPlasticity, error) {
+	r := auth.ResolvePlasticity(nil)
+	r.MultiUser = true
+	return &r, nil
+}
+
+func TestHandleWhereLeftOff_MultiUserHint(t *testing.T) {
+	srv := newTestServerWith(&multiUserEngine{})
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_where_left_off","arguments":{"vault":"default"}}}`
+	w := postRPC(t, srv, body)
+	content := extractInnerJSON(t, decodeResp(t, w.Body.String()))
+	hint, _ := content["hint"].(string)
+	if !strings.Contains(hint, "ALL users") {
+		t.Errorf("multi-user where_left_off hint should flag vault-global results, got %q", hint)
+	}
+	if strings.Contains(hint, "your most recently accessed memories") {
+		t.Errorf("multi-user where_left_off hint must not claim the results are the caller's own, got %q", hint)
+	}
+}
+
+func TestHandleRecall_EmptyHint_MultiUser(t *testing.T) {
+	// fakeEngine.Activate returns no activations, so the empty-result hint fires.
+	srv := newTestServerWith(&multiUserEngine{})
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_recall","arguments":{"vault":"default","context":["nothing matches"]}}}`
+	w := postRPC(t, srv, body)
+	content := extractInnerJSON(t, decodeResp(t, w.Body.String()))
+	hint, _ := content["hint"].(string)
+	if !strings.Contains(hint, "per-user tag") {
+		t.Errorf("multi-user empty-recall hint should recommend per-user scoped recall, got %q", hint)
+	}
+	if strings.Contains(hint, "or use muninn_where_left_off") {
+		t.Errorf("multi-user empty-recall hint must not recommend where_left_off, got %q", hint)
+	}
+}
+
+func TestHandleRecall_EmptyHint_SingleUser(t *testing.T) {
+	srv := newTestServer()
+	body := `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"muninn_recall","arguments":{"vault":"default","context":["nothing matches"]}}}`
+	w := postRPC(t, srv, body)
+	content := extractInnerJSON(t, decodeResp(t, w.Body.String()))
+	hint, _ := content["hint"].(string)
+	if !strings.Contains(hint, "muninn_where_left_off") {
+		t.Errorf("single-user empty-recall hint should keep the where_left_off suggestion, got %q", hint)
 	}
 }

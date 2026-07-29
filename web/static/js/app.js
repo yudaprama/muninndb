@@ -204,6 +204,7 @@ document.addEventListener('alpine:init', () => {
       relevanceFloor: null,
       temporalHalflife: null,
       recallMode: 'balanced',
+      scoringFusion: '',
     },
     plasticitySaving: false,
     plasticitySaveOk: false,
@@ -1973,6 +1974,10 @@ document.addEventListener('alpine:init', () => {
                 '/api/admin/vault/' + encodeURIComponent(this.vault) + '/plasticity'
             );
             const cfg = data.config || {};
+            // Keep the raw stored config: savePlasticity merges it into the PUT
+            // payload so fields this panel does not edit (multi_user,
+            // behavior_mode, …) survive a save (the PUT replaces the whole config).
+            this.plasticityRawConfig = cfg;
             this.plasticityForm.preset         = cfg.preset || 'default';
             this.plasticityForm.hebbianEnabled = data.resolved?.hebbian_enabled ?? true;
             this.plasticityForm.temporalEnabled   = data.resolved?.temporal_enabled   ?? true;
@@ -1982,6 +1987,7 @@ document.addEventListener('alpine:init', () => {
             this.plasticityForm.relevanceFloor     = cfg.relevance_floor     ?? null;
             this.plasticityForm.temporalHalflife = cfg.temporal_halflife ?? null;
             this.plasticityForm.recallMode = cfg.recall_mode || data.resolved?.recall_mode || 'balanced';
+            this.plasticityForm.scoringFusion = cfg.scoring_fusion ?? data.resolved?.scoring_fusion ?? '';
         } catch (err) {
             console.error('loadPlasticity error:', err);
             this.plasticitySaveErr = 'Failed to load Plasticity settings';
@@ -1995,6 +2001,7 @@ document.addEventListener('alpine:init', () => {
         this.plasticityForm.temporalHalflife = null;
         this.plasticityForm.hebbianEnabled = true;
         this.plasticityForm.temporalEnabled   = true;
+        this.plasticityForm.scoringFusion = '';
         this._updatePlasticityChart();
     },
     _plasticityData: {
@@ -2002,12 +2009,14 @@ document.addEventListener('alpine:init', () => {
         'reference':       [1.00, 0.35, 0.375, 0.80, 0.70],
         'scratchpad':      [0.05, 0.00, 0.00, 0.70, 0.60],
         'knowledge-graph': [0.70, 1.00, 1.00, 0.75, 0.50],
+        'working':         [0.30, 0.40, 0.50, 0.70, 0.60],
     },
     _plasticityColors: {
         'default':         { border: '#6366f1', bg: 'rgba(99,102,241,0.35)' },
         'reference':       { border: '#10b981', bg: 'rgba(16,185,129,0.35)' },
         'scratchpad':      { border: '#f59e0b', bg: 'rgba(245,158,11,0.35)' },
         'knowledge-graph': { border: '#ec4899', bg: 'rgba(236,72,153,0.35)' },
+        'working':         { border: '#14b8a6', bg: 'rgba(20,184,166,0.35)' },
     },
     initPlasticityChart() {
         const canvas = document.getElementById('plasticityChart');
@@ -2084,6 +2093,7 @@ document.addEventListener('alpine:init', () => {
             'reference':       'Documentation and facts. Temporal scoring OFF — memories persist indefinitely.',
             'scratchpad':      'Ephemeral drafts. Aggressive fading (7-day halflife, 0.01 floor). No Hebbian, no hops.',
             'knowledge-graph': 'Dense interlinked concepts. 4-hop BFS, slow fading (60-day halflife).',
+            'working':         'Shared workflow scratch. Default cognition (Hebbian + PAS, 2-hop) with 7-day auto-eviction. Pair with multi_user for multi-agent workflows.',
         };
         return d[preset] || '';
     },
@@ -2092,8 +2102,9 @@ document.addEventListener('alpine:init', () => {
         this.plasticitySaveOk = false;
         this.plasticitySaveErr = '';
         try {
-            const payload = { version: 1, preset: this.plasticityForm.preset };
+            const payload = { ...(this.plasticityRawConfig || {}), version: 1, preset: this.plasticityForm.preset };
             payload.recall_mode = this.plasticityForm.recallMode;
+            payload.scoring_fusion = this.plasticityForm.scoringFusion;
             if (this.plasticityForm.showAdvanced) {
                 if (this.plasticityForm.hopDepth       !== null) payload.hop_depth       = this.plasticityForm.hopDepth;
                 if (this.plasticityForm.semanticWeight !== null) payload.semantic_weight = this.plasticityForm.semanticWeight;
@@ -2102,6 +2113,17 @@ document.addEventListener('alpine:init', () => {
                 if (this.plasticityForm.temporalHalflife !== null) payload.temporal_halflife = this.plasticityForm.temporalHalflife;
                 payload.hebbian_enabled = this.plasticityForm.hebbianEnabled;
                 payload.temporal_enabled   = this.plasticityForm.temporalEnabled;
+            } else {
+                // Advanced panel is collapsed: reset any overrides carried over from
+                // plasticityRawConfig so the preset's defaults apply, matching the
+                // form (which shows no override in this state).
+                delete payload.hop_depth;
+                delete payload.semantic_weight;
+                delete payload.fts_weight;
+                delete payload.relevance_floor;
+                delete payload.temporal_halflife;
+                delete payload.hebbian_enabled;
+                delete payload.temporal_enabled;
             }
             await this.apiCall(
                 '/api/admin/vault/' + encodeURIComponent(this.vault) + '/plasticity',

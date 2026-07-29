@@ -5,7 +5,7 @@ package auth
 // Non-nil pointer fields override the chosen preset value.
 type PlasticityConfig struct {
 	Version int    `json:"version,omitempty"` // schema version, currently 1
-	Preset  string `json:"preset,omitempty"`  // "default" | "reference" | "scratchpad" | "knowledge-graph"
+	Preset  string `json:"preset,omitempty"`  // "default" | "reference" | "scratchpad" | "knowledge-graph" | "working"
 
 	// Optional overrides (nil = use preset value)
 	HebbianEnabled    *bool    `json:"hebbian_enabled,omitempty"`
@@ -68,6 +68,13 @@ type PlasticityConfig struct {
 	// ExcludeUntrusted controls whether untrusted engrams are filtered from ACTIVATE results.
 	// nil = false (default: include all engrams regardless of trust).
 	ExcludeUntrusted *bool `json:"exclude_untrusted,omitempty"`
+
+	// MultiUser marks the vault as shared by multiple users or agents. When set,
+	// guidance surfaces (muninn_guide, empty-recall hints) steer clients away from
+	// vault-global recency tools (muninn_where_left_off, muninn_session) toward
+	// per-user scoped recall (e.g. a per-user tag in the recall context).
+	// nil = false (single-user; guidance unchanged).
+	MultiUser *bool `json:"multi_user,omitempty"`
 }
 
 // ResolvedPlasticity is the fully-merged configuration after applying preset defaults
@@ -106,6 +113,9 @@ type ResolvedPlasticity struct {
 	// Behavior mode
 	BehaviorMode         string `json:"behavior_mode"`
 	BehaviorInstructions string `json:"behavior_instructions"`
+	// MultiUser: vault is shared by multiple users/agents; guidance surfaces
+	// steer clients from vault-global recency tools to per-user scoped recall.
+	MultiUser bool `json:"multi_user"`
 	// Inline enrichment mode
 	InlineEnrichment string `json:"inline_enrichment"` // "caller_only", "caller_preferred", "background_only", "disabled"
 	// EnrichmentEnabled is a vault-level kill switch for all enrichment.
@@ -253,6 +263,35 @@ var plasticityPresets = map[string]plasticityPreset{
 		AssocMinWeight:       0.03,
 		ArchiveThreshold:     0.05,
 		BehaviorMode:         "autonomous",
+		InlineEnrichment:     "caller_preferred",
+		EnrichmentEnabled:    true,
+		RecallMode:           "balanced",
+	},
+	"working": {
+		// default-derived cognition (Hebbian + PAS on) for a shared workflow
+		// vault, with two changes: scratch auto-evaporates, and agents get
+		// "selective" persistence guidance. See RFC #597.
+		HebbianEnabled:       true,
+		TemporalEnabled:      true,
+		AutoLinkNeighbors:    true,
+		HopDepth:             2,
+		SemanticWeight:       0.6,
+		FTSWeight:            0.3,
+		RelevanceFloor:       0.05,
+		TemporalHalflife:     30,
+		HebbianWeight:        0.5,
+		TemporalWeight:       0.4,
+		RecencyWeight:        0.3,
+		ACTRDecay:            0.5,
+		ACTRHebScale:         4.0,
+		PredictiveActivation: true,
+		PASMaxInjections:     5,
+		MaxEngrams:           0,
+		RetentionDays:        7,
+		AssocDecayFactor:     0.95,
+		AssocMinWeight:       0.05,
+		ArchiveThreshold:     0.05,
+		BehaviorMode:         "selective",
 		InlineEnrichment:     "caller_preferred",
 		EnrichmentEnabled:    true,
 		RecallMode:           "balanced",
@@ -465,6 +504,9 @@ func ResolvePlasticity(cfg *PlasticityConfig) ResolvedPlasticity {
 	}
 	if cfg.ExcludeUntrusted != nil {
 		r.ExcludeUntrusted = *cfg.ExcludeUntrusted
+	}
+	if cfg.MultiUser != nil {
+		r.MultiUser = *cfg.MultiUser
 	}
 	// LTP overrides
 	if cfg.LTPThreshold != nil {

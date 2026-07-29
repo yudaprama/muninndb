@@ -324,7 +324,7 @@ Every cognitive behavior is tunable per vault:
 
 | Setting | Default | Range | Description |
 |---------|---------|-------|-------------|
-| `preset` | `"default"` | default/reference/scratchpad/knowledge-graph | Base behavior template |
+| `preset` | `"default"` | default/reference/scratchpad/knowledge-graph/working | Base behavior template |
 | `hebbian_enabled` | true | bool | Hebbian co-activation learning |
 | `temporal_enabled` | true | bool | Temporal decay scoring |
 | `auto_link_neighbors` | true | bool | Semantic neighbor auto-linking on write |
@@ -341,6 +341,7 @@ Every cognitive behavior is tunable per vault:
 | `pas_max_injections` | 5 | 0–10 | Max PAS candidates to inject |
 | `behavior_mode` | `"autonomous"` | autonomous/prompted/selective/custom | How the AI should use memory (see below) |
 | `behavior_instructions` | `""` | string | Custom instructions for "custom" mode |
+| `multi_user` | false | bool | Vault is shared by multiple users/agents: guide + recall hints steer clients to per-user scoped recall; `muninn_where_left_off`/`muninn_session` are flagged vault-global (admin/audit) |
 | `inline_enrichment` | `"caller_preferred"` | caller_only/caller_preferred/background_only/disabled | How inline vs background enrichment interact (see below) |
 | `enrichment_enabled` | true | bool | Kill switch for all enrichment on this vault |
 | `max_engrams` | 0 (unlimited) | int | Auto-prune when exceeded |
@@ -350,6 +351,7 @@ Every cognitive behavior is tunable per vault:
 - **default** — balanced, all features on, autonomous behavior
 - **reference** — long-term knowledge, minimal decay, strong Hebbian, autonomous behavior
 - **scratchpad** — short-lived, high recency bias, no Hebbian, PAS off, selective behavior
+- **working** — default cognition (Hebbian + PAS on) with 7-day auto-eviction and selective behavior; for shared workflow scratch vaults, pair with `multi_user` (RFC #597)
 - **knowledge-graph** — deep traversal (4 hops), strong Hebbian (8.0 scale), autonomous behavior
 
 ### Behavior Modes (How the AI Uses Memory)

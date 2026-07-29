@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/scrypster/muninndb/internal/prefix"
 	"github.com/scrypster/muninndb/internal/storage/keys"
 )
 
@@ -31,10 +32,10 @@ func (ps *PebbleStore) ClearEmbedFlagsForVault(ctx context.Context, ws [8]byte) 
 
 	// Step 1: Range-delete all 0x18 embedding keys for this vault.
 	lo := make([]byte, 9)
-	lo[0] = 0x18
+	lo[0] = prefix.Embedding
 	copy(lo[1:], ws[:])
 	hi := make([]byte, 9)
-	hi[0] = 0x18
+	hi[0] = prefix.Embedding
 	copy(hi[1:], wsPlus[:])
 
 	if err := ps.db.DeleteRange(lo, hi, pebble.Sync); err != nil {
@@ -45,10 +46,10 @@ func (ps *PebbleStore) ClearEmbedFlagsForVault(ctx context.Context, ws [8]byte) 
 	// digest flag, clear bit 0x02, and write back. Skip engrams where the bit is
 	// already cleared.
 	engramLo := make([]byte, 9)
-	engramLo[0] = 0x01
+	engramLo[0] = prefix.Engram
 	copy(engramLo[1:], ws[:])
 	engramHi := make([]byte, 9)
-	engramHi[0] = 0x01
+	engramHi[0] = prefix.Engram
 	copy(engramHi[1:], wsPlus[:])
 
 	iter, err := ps.db.NewIter(&pebble.IterOptions{
@@ -132,10 +133,10 @@ func (ps *PebbleStore) ClearHNSWForVault(ws [8]byte) error {
 	}
 
 	lo := make([]byte, 9)
-	lo[0] = 0x07
+	lo[0] = prefix.HNSWNode
 	copy(lo[1:], ws[:])
 	hi := make([]byte, 9)
-	hi[0] = 0x07
+	hi[0] = prefix.HNSWNode
 	copy(hi[1:], wsPlus[:])
 
 	if err := ps.db.DeleteRange(lo, hi, pebble.Sync); err != nil {
@@ -167,4 +168,45 @@ func (ps *PebbleStore) SetEmbedModel(ws [8]byte, model string) error {
 		return ps.db.Delete(key, pebble.Sync)
 	}
 	return ps.db.Set(key, []byte(model), pebble.Sync)
+}
+
+// VaultEmbedDimOnDisk returns the embedding dimension established by a vault's
+// stored vectors, without loading its HNSW graph into memory: it reads the
+// first persisted embedding (0x18) key for the vault. The stored value is
+// 8 bytes of quantization parameters followed by one byte per vector component
+// (the same layout migration v1 derives dimensions from). Returns 0 when the
+// vault has no stored embeddings.
+func (ps *PebbleStore) VaultEmbedDimOnDisk(ws [8]byte) (int, error) {
+	wsPlus, err := keys.IncrementWSPrefix(ws)
+	if err != nil {
+		return 0, fmt.Errorf("vault embed dim: increment ws: %w", err)
+	}
+
+	lo := make([]byte, 9)
+	lo[0] = prefix.Embedding
+	copy(lo[1:], ws[:])
+	hi := make([]byte, 9)
+	hi[0] = prefix.Embedding
+	copy(hi[1:], wsPlus[:])
+
+	iter, err := ps.db.NewIter(&pebble.IterOptions{
+		LowerBound: lo,
+		UpperBound: hi,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("vault embed dim: create iter: %w", err)
+	}
+	defer iter.Close()
+
+	if !iter.First() {
+		return 0, nil
+	}
+	val, err := iter.ValueAndErr()
+	if err != nil {
+		return 0, fmt.Errorf("vault embed dim: read value: %w", err)
+	}
+	if len(val) <= 8 {
+		return 0, nil
+	}
+	return len(val) - 8, nil
 }

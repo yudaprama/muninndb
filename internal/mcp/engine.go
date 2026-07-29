@@ -87,9 +87,11 @@ type EngineInterface interface {
 	// LastAccess descending. limit caps results (default 10, max 50).
 	WhereLeftOff(ctx context.Context, vault string, limit int) ([]WhereLeftOffEntry, error)
 
-	// FindByEntity returns all engrams that mention the given entity name,
-	// scanned from the 0x23 reverse index. Results are limited to limit entries.
-	FindByEntity(ctx context.Context, vault, entityName string, limit int) ([]*storage.Engram, error)
+	// FindByEntity returns engrams that mention the given entity name,
+	// scanned from the 0x23 reverse index; on zero exact matches the vault's
+	// entity names are fuzzy-resolved by token overlap and the result reports
+	// which entity actually served the lookup. Results are limited to limit entries.
+	FindByEntity(ctx context.Context, vault, entityName string, limit int) (*engine.FindByEntityResult, error)
 
 	// CheckIdempotency looks up an op_id receipt. Returns nil, nil if not found.
 	CheckIdempotency(ctx context.Context, opID string) (*storage.IdempotencyReceipt, error)
@@ -171,8 +173,32 @@ type EngineInterface interface {
 	// trust must be one of "verified", "inferred", "external", "untrusted".
 	SetTrust(ctx context.Context, vault, id, trust string) error
 
+	// CompareAndSet atomically transitions an engram's lifecycle state, applying
+	// setState only if the current state matches expectState (nil bounds are
+	// skipped). Returns whether it applied plus the current state and lease owner.
+	CompareAndSet(ctx context.Context, vault, id string, expectState, setState *string) (applied bool, state, owner string, err error)
+
+	// Claim takes or refreshes an advisory ownership lease on an engram for
+	// work-queue coordination. Returns one of acquired/refreshed/reclaimed/conflict,
+	// and (on conflict) the live owner plus its heartbeat.
+	Claim(ctx context.Context, vault, id, owner string, ttlSecs int64) (status, curOwner string, heartbeat int64, err error)
+
+	// Release relinquishes a lease held by owner. Idempotent: released is false
+	// when the engram was unleased or held by someone else.
+	Release(ctx context.Context, vault, id, owner string) (released bool, curOwner string, err error)
+
 	// GetAnnotations returns annotation metadata for a single engram.
 	// Used to populate muninn_recall annotation objects when annotate=true.
 	// Returns a non-nil *engine.AnnotationData (possibly with empty fields) on success.
 	GetAnnotations(ctx context.Context, vault, id string) (*engine.AnnotationData, error)
+
+	// RegisterVaultName registers a vault name in the engine's vault registry
+	// (idempotent 2-key write). Used by muninn_create_workflow_vault (RFC #597).
+	RegisterVaultName(name string) error
+
+	// VaultNameExists reports whether a vault with the given name is registered
+	// (i.e. has a 0x0F name→prefix index key). Used by muninn_create_workflow_vault
+	// to reject caller-supplied names that collide with an existing vault
+	// (operator or workflow-scoped), preventing cross-vault config clobber.
+	VaultNameExists(name string) bool
 }

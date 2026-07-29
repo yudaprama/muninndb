@@ -62,6 +62,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/scrypster/muninndb/internal/prefix"
 	"github.com/scrypster/muninndb/internal/storage/erf"
 	"github.com/scrypster/muninndb/internal/storage/keys"
 	"github.com/vmihailenco/msgpack/v5"
@@ -1037,16 +1038,22 @@ func (ps *PebbleStore) deleteEntityLinks(ws [8]byte, engramID [16]byte, batch *p
 	return entityNames, nil
 }
 
-// ScanVaultEntityNames scans the 0x20 forward index for all distinct entity names
-// in a vault. The same entity name may appear multiple times (once per engram-link);
-// fn is called exactly once per unique name.
+// ScanVaultEntityNames scans the 0x20 forward index for all distinct entity
+// identities in a vault. The 0x20 link value stores the entity name with its
+// original casing, so one entity can appear under several case/whitespace/NFKC
+// variants. Entity identity is case-insensitive everywhere else (the 0x1F record
+// key, GetEntityRecord and the per-entity lock all normalize), so dedup here is by
+// keys.NormalizeEntityName, not the raw value — otherwise duplicate identities leak
+// into callers (duplicate rows in ListEntities, un-mergeable pairs in
+// FindSimilarEntities). fn is called exactly once per identity, with the first-seen
+// casing as the representative name.
 func (ps *PebbleStore) ScanVaultEntityNames(ctx context.Context, ws [8]byte, fn func(name string) error) error {
-	prefix := make([]byte, 1+8)
-	prefix[0] = 0x20
-	copy(prefix[1:9], ws[:])
+	prefixPre := make([]byte, 1+8)
+	prefixPre[0] = prefix.EntityEngramLink
+	copy(prefixPre[1:9], ws[:])
 
-	upperBound := make([]byte, len(prefix))
-	copy(upperBound, prefix)
+	upperBound := make([]byte, len(prefixPre))
+	copy(upperBound, prefixPre)
 	for i := len(upperBound) - 1; i >= 0; i-- {
 		upperBound[i]++
 		if upperBound[i] != 0 {
@@ -1054,7 +1061,7 @@ func (ps *PebbleStore) ScanVaultEntityNames(ctx context.Context, ws [8]byte, fn 
 		}
 	}
 
-	iter, err := ps.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: upperBound})
+	iter, err := ps.db.NewIter(&pebble.IterOptions{LowerBound: prefixPre, UpperBound: upperBound})
 	if err != nil {
 		return fmt.Errorf("scan vault entity names: iter: %w", err)
 	}
@@ -1067,10 +1074,11 @@ func (ps *PebbleStore) ScanVaultEntityNames(ctx context.Context, ws [8]byte, fn 
 		if name == "" {
 			continue
 		}
-		if _, already := seen[name]; already {
+		identity := keys.NormalizeEntityName(name)
+		if _, already := seen[identity]; already {
 			continue
 		}
-		seen[name] = struct{}{}
+		seen[identity] = struct{}{}
 		if err := fn(name); err != nil {
 			return err
 		}
