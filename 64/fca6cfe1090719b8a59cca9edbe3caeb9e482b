@@ -1,0 +1,42 @@
+sdk/rust/src/client.rs
+  s_929969e88ca495::t_3b2c03c563b97e 1-692
+sdk/rust/.gitignore
+  s_929969e88ca495::t_a345987f1c3c90 1-2
+sdk/rust/src/errors.rs
+  s_929969e88ca495::t_8f5534bd8af265 1-75
+sdk/rust/examples/quickstart.rs
+  s_929969e88ca495::t_e78621047c7b9b 2-38
+  s_929969e88ca495::t_c6780b1c83dbba 1
+sdk/rust/Cargo.toml
+  s_929969e88ca495::t_367983c8eaa3ec 15-17
+  s_929969e88ca495::t_91c972a8d10435 1-14,18-22
+sdk/rust/examples/lifecycle.rs
+  s_929969e88ca495::t_b30ea25e8d659b 1-65
+sdk/rust/src/sse.rs
+  s_929969e88ca495::t_6f1b23e059d50d 1,5,25,80
+  s_929969e88ca495::t_2954e2d351fc48 2
+  s_929969e88ca495::t_90a3acd958c909 3-4,6-24,26-79,81
+sdk/rust/src/lib.rs
+  s_929969e88ca495::t_345d58be763f54 1-9
+sdk/rust/src/types.rs
+  s_929969e88ca495::t_a3a9dc40017cea 1-593
+sdk/rust/examples/cognitive_loop.rs
+  s_929969e88ca495::t_0bc8881dc56f6b 1,3-78
+  s_929969e88ca495::t_d3640087d3668a 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "64fca6cfe1090719b8a59cca9edbe3caeb9e482b",
+  "prompts": {},
+  "sessions": {
+    "s_929969e88ca495": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04e656776ffe1zVCwQHhlkQL0Q",
+        "model": "mimo-v2.5-free"
+      },
+      "human_author": "yudaprama <yudhaprama@icloud.com>"
+    }
+  }
+}
