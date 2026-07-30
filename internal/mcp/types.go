@@ -3,6 +3,8 @@ package mcp
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/scrypster/muninndb/internal/engine"
 )
 
 // JSON-RPC 2.0 envelope types
@@ -61,44 +63,79 @@ type WriteResult struct {
 	Concept  string   `json:"concept"`
 	Hint     string   `json:"hint,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
+	// Notices are prospective-memory deliveries (THE PUSH): armed intentions
+	// whose cue entity is focal in this write's inline entities. Omitted when
+	// empty (zero token cost) and inert unless MUNINN_PROSPECTIVE=1.
+	Notices []engine.Notice `json:"notices,omitempty"`
 }
 
 type Memory struct {
-	ID          string    `json:"id"`
-	Concept     string    `json:"concept"`
-	Content     string    `json:"content"` // recall: real content (truncated); read: full content
-	Summary     string    `json:"summary,omitempty"`
-	Score       float64   `json:"score,omitempty"`
-	VectorScore float64   `json:"vector_score,omitempty"`
-	Confidence  float32   `json:"confidence"`
-	Why         string    `json:"why,omitempty"`
-	Tags        []string  `json:"tags,omitempty"`
-	State       string    `json:"state,omitempty"`
-	Type        string    `json:"type"`                 // canonical MemoryType label ("fact", "decision", ...); always present
-	TypeLabel   string    `json:"type_label,omitempty"` // writer-supplied free-form label, e.g. "architectural_decision"
-	CreatedAt   time.Time `json:"created_at"`
-	LastAccess  time.Time `json:"last_access"`
-	AccessCount uint32    `json:"access_count,omitempty"`
-	Relevance   float32   `json:"relevance,omitempty"`
-	SourceType  string    `json:"source_type,omitempty"`
-	Trust       string    `json:"trust,omitempty"` // "verified", "inferred", "external", "untrusted"
+	ID          string  `json:"id"`
+	Concept     string  `json:"concept"`
+	Content     string  `json:"content"` // recall: real content (truncated); read: full content
+	Summary     string  `json:"summary,omitempty"`
+	Score       float64 `json:"score,omitempty"`
+	VectorScore float64 `json:"vector_score,omitempty"`
+	// VectorScoreRaw is the uncalibrated cosine similarity behind VectorScore
+	// (COG-26's honesty backstop — see activation.ScoreComponents.
+	// SemanticSimilarityRaw). Lets an operator see the raw signal for a match
+	// that a low VectorScore made look weak or that abstained entirely.
+	VectorScoreRaw float64   `json:"vector_score_raw,omitempty"`
+	EntityBoost    float64   `json:"entity_boost,omitempty"`
+	Confidence     float32   `json:"confidence"`
+	Why            string    `json:"why,omitempty"`
+	Tags           []string  `json:"tags,omitempty"`
+	State          string    `json:"state,omitempty"`
+	Type           string    `json:"type"`                 // canonical MemoryType label ("fact", "decision", ...); always present
+	TypeLabel      string    `json:"type_label,omitempty"` // writer-supplied free-form label, e.g. "architectural_decision"
+	CreatedAt      time.Time `json:"created_at"`
+	LastAccess     time.Time `json:"last_access"`
+	AccessCount    uint32    `json:"access_count,omitempty"`
+	Relevance      float32   `json:"relevance,omitempty"`
+	SourceType     string    `json:"source_type,omitempty"`
+	Trust          string    `json:"trust,omitempty"` // "verified", "inferred", "external", "untrusted"
+
+	// Importance is the use-time EffectiveImportance in [0,1]; always present.
+	// ImportanceSource says where it came from: "explicit" (caller-asserted at
+	// write/evolve) or "derived" (memory-type table + trust bump — never
+	// stored, computed at read time).
+	Importance       float64 `json:"importance"`
+	ImportanceSource string  `json:"importance_source"` // "explicit" | "derived"
+
+	// Valid-time (application-time) axis, half-open [valid_from, valid_until).
+	// Distinct from created_at (transaction time). muninn_read always sets
+	// valid_from and is_current; recall sets valid_from only when it diverges
+	// from created_at. valid_until appears only when the window is closed;
+	// expired marks a fact whose window closed at or before now (only
+	// reachable in recall results under include_invalid=true).
+	ValidFrom  *time.Time `json:"valid_from,omitempty"`
+	ValidUntil *time.Time `json:"valid_until,omitempty"`
+	IsCurrent  *bool      `json:"is_current,omitempty"`
+	Expired    bool       `json:"expired,omitempty"`
 
 	// Populated only by muninn_read (omitted from recall responses).
 	Entities            []ReadEntity    `json:"entities,omitempty"`
 	EntityRelationships []ReadEntityRel `json:"entity_relationships,omitempty"`
 
-	// Populated only by muninn_recall when annotate=true.
+	// Populated by muninn_recall: supersession fields (superseded_by / current_version)
+	// are always set when the memory is superseded; the rest of the fields
+	// (stale, conflicts_with, last_verified) only when annotate=true.
 	Annotations *MemoryAnnotations `json:"annotations,omitempty"`
 }
 
-// MemoryAnnotations contains contextual metadata about a recalled memory,
-// populated only when muninn_recall is called with annotate=true.
+// MemoryAnnotations contains contextual metadata about a recalled memory.
+// SupersededBy / CurrentVersion are populated whenever the memory is superseded
+// (always-on, from supersedes-aware recall); the other fields are populated only
+// when muninn_recall is called with annotate=true.
 type MemoryAnnotations struct {
 	Stale         bool     `json:"stale"`
 	StaleDays     float64  `json:"stale_days"`
 	ConflictsWith []string `json:"conflicts_with,omitempty"`
-	SupersededBy  string   `json:"superseded_by,omitempty"`
-	LastVerified  string   `json:"last_verified,omitempty"` // RFC3339
+	// SupersededBy is the immediate superseder's ULID; CurrentVersion is the chain
+	// head — the fact to consult now. Both present when this memory is stale.
+	SupersededBy   string `json:"superseded_by,omitempty"`
+	CurrentVersion string `json:"current_version,omitempty"`
+	LastVerified   string `json:"last_verified,omitempty"` // RFC3339
 }
 
 // ReadEntity is a named entity linked to a specific engram.
@@ -212,10 +249,15 @@ type ExplainRequest struct {
 type ExplainComponents struct {
 	FullTextRelevance  float64 `json:"full_text_relevance"`
 	SemanticSimilarity float64 `json:"semantic_similarity"`
-	DecayFactor        float64 `json:"decay_factor"`
-	HebbianBoost       float64 `json:"hebbian_boost"`
-	AccessFrequency    float64 `json:"access_frequency"`
-	Confidence         float64 `json:"confidence"`
+	// SemanticSimilarityRaw is the uncalibrated cosine similarity — see
+	// activation.ScoreComponents.SemanticSimilarityRaw. Lets an operator see
+	// the raw signal (e.g. 0.59) behind a calibrated value that abstained
+	// (e.g. 0.07) without a second tool call.
+	SemanticSimilarityRaw float64 `json:"semantic_similarity_raw"`
+	DecayFactor           float64 `json:"decay_factor"`
+	HebbianBoost          float64 `json:"hebbian_boost"`
+	AccessFrequency       float64 `json:"access_frequency"`
+	Confidence            float64 `json:"confidence"`
 }
 
 // ExplainResult breaks down why an engram scored as it did for a given query.
@@ -369,6 +411,11 @@ type WhereLeftOffEntry struct {
 	State      string    `json:"state"`
 	Type       string    `json:"type"`                 // canonical MemoryType label; always present
 	TypeLabel  string    `json:"type_label,omitempty"` // writer-supplied free-form label
+	Tags       []string  `json:"tags,omitempty"`
+	// Importance is the use-time EffectiveImportance; ImportanceSource is
+	// "explicit" or "derived" (same convention as Memory).
+	Importance       float64 `json:"importance"`
+	ImportanceSource string  `json:"importance_source"`
 }
 
 // EntityClusterResult is one entity co-occurrence pair returned by muninn_entity_clusters.

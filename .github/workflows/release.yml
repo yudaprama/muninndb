@@ -81,7 +81,7 @@ jobs:
           go build -tags localassets -ldflags "-X main.version=${GITHUB_REF_NAME}" -o muninn-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/muninn/...
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: muninn-${{ matrix.goos }}-${{ matrix.goarch }}
           path: muninn-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -91,7 +91,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           merge-multiple: true
 

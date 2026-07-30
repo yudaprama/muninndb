@@ -141,5 +141,37 @@ integrity reports.
 **Explicitly deferred / rejected — do not reopen without new evidence:** write-path lease
 enforcement, fencing tokens, CAS crash-atomicity (until a workflow demands them); write-mode
 pattern keys (dropped in #608 v2); per-key toolset attribute (the key layer is not a
-presentation layer, #604); ambient push (negative result, #609); `tag_prefix` via the hash
-index (it's hash-indexed, stays a post-filter).
+presentation layer, #604); ambient push (negative result, #609).
+
+**`tag_prefix` seeds candidates via a new ordered index, not the hash index (S1).**
+Superseded the earlier "stays a post-filter" call above: the 0x0C tag index is
+hash-indexed and cannot range-scan, so `tag_prefix` (e.g. `due:<=today`) could only be
+checked post-hoc in phase 6, after other indices had already decided the candidate pool —
+exactly the #607 failure mode, but for range filters instead of exact ones. S1 adds 0x2B,
+a SEPARATE index keyed on `Hash(tagKey)` with the raw tag VALUE sorted after it, so
+`lte`/`gte`/`lt`/`gt`/`eq` become real bounded Pebble range scans that seed phase-2
+candidates (`ActivationEngine.seedTagCandidates` / `storage.ScanRawTagRange`); phase 6's
+`passesMetaFilter` remains the exactness gate. See `docs/internals/keyspace-registry.md`
+0x2B for the key layout. **Principle: "stays a post-filter" is a permanent verdict only
+until the seeding mechanism it was rejected for becomes cheap to build — re-litigate
+when the cost equation changes, don't let an old call block a index built for it.**
+
+### Calibration is per-vault, self-derived, never hardcoded from a sample vault (semantic floor / #712, 2026-07-29)
+
+Reliable-colleague work surfaced a recurring trap: tuning a threshold/baseline/vocabulary on the
+maintainer's own vault and shipping that constant as the universal default. #712 currency
+(version-cluster) failed this twice — v1's entity anchor didn't fire on the entity-sparse real
+vault, and v2's tag-marker vocabulary (`four-bucket`, `v2`, `final`) + document-frequency
+thresholds were tuned to one vault's pricing history (and still false-positived on it, telling a
+shipped fact it was superseded by an aspirational "planned" one). The semantic-abstention floor's
+`b = μ+2σ` was derived from that vault's embedding anisotropy — a value that fits bge-small on that
+corpus but misfloors a different vault or model. The maintainer's framing: *"you can calibrate my
+vault to get better results, everyone can calibrate their own vault, but we shouldn't be defining
+the calibration for others."* A maintainer/sample vault is for FINDING bugs and VALIDATING that a
+feature survives messy real data — never for baking a constant into the product; a feature that
+shines on the sample vault and does nothing (or misfires) elsewhere is a failure even when the
+sample passes. **Principle (CLAUDE.md #11): a feature that needs a number derives it from each
+vault's OWN data (self-calibrating — #711 weights IDF from the vault's own corpus; the semantic
+floor should self-measure each vault's anisotropy baseline over its own embeddings) or exposes a
+per-vault override; model/cold-start defaults are hints, never fixed law. Ship mechanisms and
+hints, not other people's answers.**

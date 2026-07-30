@@ -64,6 +64,20 @@ func (a *mcpEngineAdapter) Link(ctx context.Context, req *mbp.LinkRequest) (*mbp
 func (a *mcpEngineAdapter) Stat(ctx context.Context, req *mbp.StatRequest) (*mbp.StatResponse, error) {
 	return a.eng.Stat(ctx, req)
 }
+
+// THE PUSH increment 1: prospective memory. These satisfy the optional
+// prospectiveCapable interface consulted by muninn_intend and the notices
+// path on recall/remember.
+func (a *mcpEngineAdapter) Intend(ctx context.Context, vault, content string, cues []string, validUntil *time.Time, oneShot bool, importance *float32) (string, error) {
+	return a.eng.Intend(ctx, vault, content, cues, validUntil, oneShot, importance)
+}
+func (a *mcpEngineAdapter) NoticesForRecall(ctx context.Context, vault string, results []engine.ScoredResult, sessionSeen func(string) bool, readOnly bool) ([]engine.Notice, error) {
+	return a.eng.NoticesForRecall(ctx, vault, results, sessionSeen, readOnly)
+}
+func (a *mcpEngineAdapter) NoticesForRemember(ctx context.Context, vault string, focal []string, createdID string, sessionSeen func(string) bool) ([]engine.Notice, error) {
+	return a.eng.NoticesForRemember(ctx, vault, focal, createdID, sessionSeen)
+}
+
 func (a *mcpEngineAdapter) GetContradictions(ctx context.Context, vault string) ([]ContradictionPair, error) {
 	pairs, err := a.eng.GetContradictions(ctx, vault)
 	if err != nil {
@@ -75,8 +89,8 @@ func (a *mcpEngineAdapter) GetContradictions(ctx context.Context, vault string) 
 	}
 	return result, nil
 }
-func (a *mcpEngineAdapter) Evolve(ctx context.Context, vault, oldID, newContent, reason string, embedding []float32, concept string) (*WriteResult, error) {
-	id, err := a.eng.Evolve(ctx, vault, oldID, newContent, reason, embedding, concept)
+func (a *mcpEngineAdapter) Evolve(ctx context.Context, vault, oldID, newContent, reason string, embedding []float32, concept string, entities []mbp.InlineEntity, importance *float32, effectiveAt time.Time) (*WriteResult, error) {
+	id, err := a.eng.EvolveAt(ctx, vault, oldID, newContent, reason, embedding, concept, entities, importance, effectiveAt)
 	if err != nil {
 		return nil, err
 	}
@@ -170,11 +184,12 @@ func (a *mcpEngineAdapter) Explain(ctx context.Context, vault string, req *Expla
 		Threshold:   data.Threshold,
 		FinalScore:  data.FinalScore,
 		Components: ExplainComponents{
-			FullTextRelevance:  float64(data.Components.FullTextRelevance),
-			SemanticSimilarity: float64(data.Components.SemanticSimilarity),
-			DecayFactor:        float64(data.Components.DecayFactor),
-			HebbianBoost:       float64(data.Components.HebbianBoost),
-			AccessFrequency:    float64(data.Components.AccessFrequency),
+			FullTextRelevance:     float64(data.Components.FullTextRelevance),
+			SemanticSimilarity:    float64(data.Components.SemanticSimilarity),
+			SemanticSimilarityRaw: float64(data.Components.SemanticSimilarityRaw),
+			DecayFactor:           float64(data.Components.DecayFactor),
+			HebbianBoost:          float64(data.Components.HebbianBoost),
+			AccessFrequency:       float64(data.Components.AccessFrequency),
 		},
 	}, nil
 }
@@ -372,8 +387,8 @@ func (a *mcpEngineAdapter) GetEntityClusters(ctx context.Context, vault string, 
 	return result, nil
 }
 
-func (a *mcpEngineAdapter) WhereLeftOff(ctx context.Context, vault string, limit int) ([]WhereLeftOffEntry, error) {
-	engrams, err := a.eng.WhereLeftOff(ctx, vault, limit)
+func (a *mcpEngineAdapter) WhereLeftOff(ctx context.Context, vault string, limit int, excludeTypeLabels []string) ([]WhereLeftOffEntry, error) {
+	engrams, err := a.eng.WhereLeftOff(ctx, vault, limit, excludeTypeLabels)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +405,7 @@ func (a *mcpEngineAdapter) WhereLeftOff(ctx context.Context, vault string, limit
 // whereLeftOffEntryFromEngram projects a stored engram onto the
 // muninn_where_left_off result shape.
 func whereLeftOffEntryFromEngram(eng *storage.Engram) WhereLeftOffEntry {
-	return WhereLeftOffEntry{
+	entry := WhereLeftOffEntry{
 		ID:         eng.ID.String(),
 		Concept:    eng.Concept,
 		Summary:    eng.Summary,
@@ -398,7 +413,10 @@ func whereLeftOffEntryFromEngram(eng *storage.Engram) WhereLeftOffEntry {
 		State:      lifecycleStateLabel(eng.State),
 		Type:       eng.MemoryType.String(),
 		TypeLabel:  eng.TypeLabel,
+		Tags:       eng.Tags,
 	}
+	entry.Importance, entry.ImportanceSource = importanceFields(eng.Importance, eng.MemoryType, eng.Trust)
+	return entry
 }
 
 // lifecycleStateLabel converts a storage.LifecycleState to a display string.

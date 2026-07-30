@@ -17,19 +17,23 @@ func allToolDefinitions() []ToolDefinition {
 	return []ToolDefinition{
 		{
 			Name:        "muninn_remember",
-			Description: "Store a new piece of information (engram) in long-term memory. IMPORTANT: Keep each memory atomic — one concept, decision, or fact per memory. If a conversation covers multiple topics, use muninn_remember_batch to store them as separate memories. Atomic memories produce sharper recall, better associations, and more accurate contradiction detection. TIP: Provide ‘entities’ and ‘entity_relationships’ whenever you can identify them — this builds the knowledge graph immediately without requiring background enrichment. NOTE: If the exact same content already exists in the vault, the existing memory ID is returned instead of creating a duplicate.",
+			Description: "Store a new piece of information (engram) in long-term memory. IMPORTANT: Keep each memory atomic — one concept, decision, or fact per memory. If a conversation covers multiple topics, use muninn_remember_batch to store them as separate memories. Atomic memories produce sharper recall, better associations, and more accurate contradiction detection. TIP: Provide ‘entities’ and ‘entity_relationships’ whenever you can identify them — this builds the knowledge graph immediately without requiring background enrichment. NOTE: If the exact same content already exists in the vault, the existing memory ID is returned instead of creating a duplicate. CAUTION: If this call is RE-ASSERTING or UPDATING a fact you already stored (a re-run score, a refreshed status), use muninn_evolve(id, ...) on the prior engram instead — calling muninn_remember repeatedly for the same evolving fact leaves every stale copy fully active and crowds recall with near-duplicates.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"vault":      vaultProp,
-					"content":    map[string]any{"type": "string", "description": "The information to remember."},
-					"concept":    map[string]any{"type": "string", "description": "Short label for this memory."},
-					"tags":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional topic tags."},
-					"confidence": map[string]any{"type": "number", "description": "Confidence score 0.0-1.0 (default 1.0)."},
-					"created_at": map[string]any{"type": "string", "description": "ISO 8601 timestamp for when this memory was created. Defaults to now. Use to seed memories at past or future times."},
-					"type":       map[string]any{"type": "string", "description": "Memory type — either a built-in name (fact, decision, observation, preference, issue, task, procedure, event, goal, constraint, identity, reference) or a free-form label (e.g. 'architectural_decision', 'coding_pattern'). Built-in names set the enum; free-form labels are stored as type_label with enum defaulting to 'fact'."},
-					"type_label": map[string]any{"type": "string", "description": "Explicit free-form type label (e.g. 'architectural_decision'). Overrides the label inferred from 'type'."},
-					"summary":    map[string]any{"type": "string", "description": "One-line summary of what this memory captures. Providing this skips background summarization."},
+					"vault":       vaultProp,
+					"content":     map[string]any{"type": "string", "description": "The information to remember."},
+					"concept":     map[string]any{"type": "string", "description": "Short label for this memory."},
+					"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional topic tags."},
+					"confidence":  map[string]any{"type": "number", "description": "Confidence score 0.0-1.0 (default 1.0)."},
+					"importance":  map[string]any{"type": "number", "description": "Importance 0.0-1.0 — how much this memory matters (priority axis, orthogonal to confidence/truth). Memories with effective importance >= 0.7 are protected from capacity (max_engrams) pruning; importance does not affect decay or recall ranking. Omit to use a default derived from the memory type (decisions/goals/constraints rank higher than observations/events)."},
+					"created_at":  map[string]any{"type": "string", "description": "ISO 8601 timestamp for when this memory was created (transaction time). Defaults to now."},
+					"valid_from":  map[string]any{"type": "string", "description": "ISO 8601 timestamp for when this fact BECAME TRUE (application time — distinct from created_at, which records when it was stored). Defaults to created_at. Use for historical facts, e.g. storing today that the office moved last January."},
+					"valid_until": map[string]any{"type": "string", "description": "ISO 8601 timestamp for when this fact STOPPED being true (exclusive — the window is [valid_from, valid_until)). Omit for facts that are still true. Facts with valid_until in the past are excluded from default recall; retrieve them with as_of or include_invalid."},
+					"type":        map[string]any{"type": "string", "description": "Memory type — either a built-in name (fact, decision, observation, preference, issue, task, procedure, event, goal, constraint, identity, reference) or a free-form label (e.g. 'architectural_decision', 'coding_pattern'). Built-in names set the enum; free-form labels are stored as type_label with enum defaulting to 'fact'."},
+					"type_label":  map[string]any{"type": "string", "description": "Explicit free-form type label (e.g. 'architectural_decision'). Overrides the label inferred from 'type'."},
+					"trust":       map[string]any{"type": "string", "enum": []string{"verified", "inferred", "external", "untrusted"}, "description": "Provenance trust level. Default 'inferred' (all AI-generated content). 'verified' = human-confirmed/admin-certified and requires a write or full credential (rejected for observe credentials). 'external' = imported from another system; 'untrusted' = flagged unreliable."},
+					"summary":     map[string]any{"type": "string", "description": "One-line summary of what this memory captures. Providing this skips background summarization."},
 					"entities": map[string]any{
 						"type":        "array",
 						"description": "Entities mentioned in this memory. Providing these skips background entity extraction.",
@@ -95,14 +99,18 @@ func allToolDefinitions() []ToolDefinition {
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"content":    map[string]any{"type": "string", "description": "The information to remember."},
-								"concept":    map[string]any{"type": "string", "description": "Short label for this memory."},
-								"tags":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional topic tags."},
-								"confidence": map[string]any{"type": "number", "description": "Confidence score 0.0-1.0 (default 1.0)."},
-								"created_at": map[string]any{"type": "string", "description": "ISO 8601 timestamp. Defaults to now."},
-								"type":       map[string]any{"type": "string", "description": "Memory type — built-in name or free-form label."},
-								"type_label": map[string]any{"type": "string", "description": "Explicit free-form type label."},
-								"summary":    map[string]any{"type": "string", "description": "One-line summary. Skips background summarization."},
+								"content":     map[string]any{"type": "string", "description": "The information to remember."},
+								"concept":     map[string]any{"type": "string", "description": "Short label for this memory."},
+								"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional topic tags."},
+								"confidence":  map[string]any{"type": "number", "description": "Confidence score 0.0-1.0 (default 1.0)."},
+								"importance":  map[string]any{"type": "number", "description": "Importance 0.0-1.0 (priority axis; >= 0.7 is protected from capacity pruning; does not affect decay or ranking). Omit for a type-derived default."},
+								"created_at":  map[string]any{"type": "string", "description": "ISO 8601 timestamp (transaction time). Defaults to now."},
+								"valid_from":  map[string]any{"type": "string", "description": "ISO 8601 timestamp for when this fact became true (application time). Defaults to created_at."},
+								"valid_until": map[string]any{"type": "string", "description": "ISO 8601 timestamp for when this fact stopped being true (exclusive). Omit for facts still true."},
+								"type":        map[string]any{"type": "string", "description": "Memory type — built-in name or free-form label."},
+								"type_label":  map[string]any{"type": "string", "description": "Explicit free-form type label."},
+								"trust":       map[string]any{"type": "string", "enum": []string{"verified", "inferred", "external", "untrusted"}, "description": "Provenance trust level. Default 'inferred'. 'verified' requires a write or full credential."},
+								"summary":     map[string]any{"type": "string", "description": "One-line summary. Skips background summarization."},
 								"entities": map[string]any{
 									"type": "array",
 									"items": map[string]any{
@@ -163,7 +171,7 @@ func allToolDefinitions() []ToolDefinition {
 				"properties": map[string]any{
 					"vault":     vaultProp,
 					"context":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Search context phrases."},
-					"threshold": map[string]any{"type": "number", "description": "Minimum relevance score 0.0-1.0 (default 0.5)."},
+					"threshold": map[string]any{"type": "number", "description": "Minimum relevance score 0.0-1.0. Default is mode-aware: 0.5 for the normal (ACT-R) scoring vault; for a vault configured with scoring_fusion='rrf', scores are rank-based and rarely exceed ~0.15, so the default there is effectively 0 (near-zero floor) — an explicit threshold above ~0.01 on an rrf vault can filter out everything."},
 					"limit":     map[string]any{"type": "integer", "description": "Max results to return (default 10)."},
 					"profile": map[string]any{
 						"type":        "string",
@@ -172,15 +180,23 @@ func allToolDefinitions() []ToolDefinition {
 					"mode": map[string]any{
 						"type":        "string",
 						"enum":        []string{"semantic", "recent", "balanced", "deep"},
-						"description": "Recall mode preset.\n• semantic  — high-precision vector search (threshold=0.3)\n• recent    — recency-biased, 1 hop (threshold=0.2)\n• balanced  — engine defaults (no override)\n• deep      — exhaustive graph traversal, 4 hops (threshold=0.1)",
+						"description": "Recall mode preset.\n• semantic  — high-precision vector search (threshold=0.3)\n• recent    — recency-biased, 1 hop (threshold=0.2)\n• balanced  — engine defaults (no override)\n• deep      — exhaustive graph traversal, 4 hops (threshold=0.1)\nPreset thresholds are ACT-R-calibrated and apply only under ACT-R/weighted-sum scoring; on an rrf-fusion vault the preset threshold abstains and the rrf mode-aware default (~0.001) applies, so modes are safe to use there. An explicit threshold always wins.",
 					},
 					"since": map[string]any{
 						"type":        "string",
-						"description": "ISO 8601 timestamp (e.g. 2026-01-15T00:00:00Z). Only return memories created after this time.",
+						"description": "ISO 8601 timestamp (e.g. 2026-01-15T00:00:00Z). Only return memories CREATED after this time (transaction axis — when they were stored). For 'what was true at T', use as_of instead.",
 					},
 					"before": map[string]any{
 						"type":        "string",
-						"description": "ISO 8601 timestamp (e.g. 2026-01-20T00:00:00Z). Only return memories created before this time.",
+						"description": "ISO 8601 timestamp (e.g. 2026-01-20T00:00:00Z). Only return memories CREATED before this time (transaction axis).",
+					},
+					"as_of": map[string]any{
+						"type":        "string",
+						"description": "ISO 8601 timestamp. Time-travel on the VALIDITY axis: only return facts whose validity window [valid_from, valid_until) covers this moment — 'what was true at T', regardless of when it was stored. Default (omitted): 'what is true now' — facts whose valid_until has passed are excluded.",
+					},
+					"include_invalid": map[string]any{
+						"type":        "boolean",
+						"description": "When true, disables the validity gate: expired facts (valid_until <= now) are returned too, annotated with expired=true and their valid_until. Use to show history. Default false.",
 					},
 					"tags_all": map[string]any{
 						"type":        "array",
@@ -222,6 +238,10 @@ func allToolDefinitions() []ToolDefinition {
 						"type":        "boolean",
 						"description": "When true, disables work-queue lease filtering so memories checked out by other owners are also returned (admin/debugging). Default false.",
 					},
+					"read_only": map[string]any{
+						"type":        "boolean",
+						"description": "When true, marks this recall as a pure read that must not trigger any write side effects. Always effectively true for observe-mode credentials -- passing read_only=false with an observe credential is rejected. Default false.",
+					},
 				},
 				"required": []string{"context"},
 			},
@@ -234,18 +254,26 @@ func allToolDefinitions() []ToolDefinition {
 				"properties": map[string]any{
 					"vault": vaultProp,
 					"id":    map[string]any{"type": "string", "description": "Memory ID (ULID)."},
+					"read_only": map[string]any{
+						"type":        "boolean",
+						"description": "When true, this read must not trigger reinforcement (AccessCount/LastAccess bump) or implicit feedback side effects. Always effectively true for observe-mode credentials -- passing read_only=false with an observe credential is rejected. Default false.",
+					},
 				},
 				"required": []string{"id"},
 			},
 		},
 		{
 			Name:        "muninn_forget",
-			Description: "Soft-delete a memory. It remains recoverable but is excluded from recall.",
+			Description: "Soft-delete a memory (excluded from recall, recoverable for 7 days). If the memory isn't wrong but simply STOPPED BEING TRUE, pass not_true_since instead: the memory is then invalidated on the validity axis (kept, not deleted) and remains retrievable via recall's as_of/include_invalid.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"vault": vaultProp,
 					"id":    map[string]any{"type": "string", "description": "Memory ID to forget."},
+					"not_true_since": map[string]any{
+						"type":        "string",
+						"description": "ISO 8601 timestamp. Instead of deleting, records that the fact stopped being true at this moment (sets valid_until). The memory stays active but drops out of default recall; as_of before this time still returns it.",
+					},
 				},
 				"required": []string{"id"},
 			},
@@ -292,7 +320,7 @@ func allToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name:        "muninn_evolve",
-			Description: "Update a memory with new information. Creates a new version and archives the old one.",
+			Description: "Update a memory with new information. Creates a new version linked to the old one by a supersedes association, and soft-deletes the old version so it drops out of present-tense recall (never destroyed — as_of still sees it). Use this — not a repeated muninn_remember — whenever a new call is re-asserting or replacing a fact you already stored; otherwise every stale copy stays fully active and crowds recall with near-duplicates.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -304,10 +332,30 @@ func allToolDefinitions() []ToolDefinition {
 						"type":        "string",
 						"description": "Optional new label for the memory. When omitted the concept is inherited verbatim. Use this to correct concepts that encode mutable state (e.g. change \"answer owed\" to \"answer sent — closed\").",
 					},
+					"effective_at": map[string]any{
+						"type":        "string",
+						"description": "ISO 8601 timestamp for when the new version BECAME TRUE (application time; defaults to now). The old version's validity window closes at this moment and the new version's opens — use when the change happened before you recorded it.",
+					},
+					"importance": map[string]any{
+						"type":        "number",
+						"description": "Importance 0.0-1.0 for the new version. Omit to inherit the predecessor's explicitly asserted importance (an unset predecessor stays unset and keeps its type-derived default).",
+					},
 					"embedding": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "number"},
 						"description": "Optional pre-computed embedding vector for the new version. When provided, the server skips its own embedding step. Must match the vault's existing embedding dimension.",
+					},
+					"entities": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"name": map[string]any{"type": "string"},
+								"type": map[string]any{"type": "string", "description": "One of: person, organization, location, product, concept, event, other."},
+							},
+							"required": []string{"name", "type"},
+						},
+						"description": "Optional replacement entities for the new version, for when the update changes what the memory is about. When omitted, the predecessor's entity links carry forward unchanged. Maximum 20.",
 					},
 				},
 				"required": []string{"id", "new_content", "reason"},
@@ -573,6 +621,15 @@ func allToolDefinitions() []ToolDefinition {
 					"limit": map[string]any{
 						"type":        "integer",
 						"description": "Max memories to return (default 10, max 50).",
+					},
+					"read_only": map[string]any{
+						"type":        "boolean",
+						"description": "When true, marks this call as a pure read. where_left_off never has write side effects regardless of this flag; it exists for API consistency with muninn_recall/muninn_read. Always effectively true for observe-mode credentials -- passing read_only=false with an observe credential is rejected. Default false.",
+					},
+					"exclude_type_labels": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Opt-in: type_label values to skip (e.g. \"session-log\"), so recency scan noise doesn't crowd out real memories. Excluded entries don't count against limit — the scan keeps going to fill it. Default: empty (no exclusion, all types included).",
 					},
 				},
 				"required": []string{},
@@ -912,6 +969,27 @@ func allToolDefinitions() []ToolDefinition {
 					},
 				},
 				"required": []string{"id", "trust"},
+			},
+		},
+		// THE PUSH: prospective memory — arm an intention on entity cues.
+		{
+			Name:        "muninn_intend",
+			Description: "Arm a prospective intention: 'when <cue entity> comes up, surface <content>'. Stored as a goal memory and armed on one or more cue entities. It NEVER interrupts — it is delivered as a 'notices' field on a later muninn_recall/muninn_remember response whose results are actually about the cue entity (requires MUNINN_PROSPECTIVE=1 on the server). Cues must be specific: an entity mentioned by a large share of the vault is refused. valid_until only silences an expired intention; it never triggers delivery.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"vault":   vaultProp,
+					"content": map[string]any{"type": "string", "description": "What to surface when a cue entity becomes focal (delivered verbatim in the notice)."},
+					"cues": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Entity names to arm on (1-8). The intention fires when one of these entities is focal in a later call's results. Prefer rare, specific entities; ubiquitous ones are rejected.",
+					},
+					"valid_until": map[string]any{"type": "string", "description": "ISO 8601 expiry. A BOUND, not a trigger: after this instant the intention is silenced, never fired. Optional."},
+					"one_shot":    map[string]any{"type": "boolean", "description": "When true (default) the intention disarms after its first delivery. Set false for a recurring prompt (re-fires once per session while armed)."},
+					"importance":  map[string]any{"type": "number", "description": "Priority in [0,1]; ranks this notice against others when more than 2 are eligible (default: goal-type derived 0.6)."},
+				},
+				"required": []string{"content", "cues"},
 			},
 		},
 		// RFC #597: privileged workflow-vault creation (recursion-guarded in dispatchToolCall).

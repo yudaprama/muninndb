@@ -1,6 +1,7 @@
 package activation
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	hnswpkg "github.com/scrypster/muninndb/internal/index/hnsw"
 	"github.com/scrypster/muninndb/internal/storage"
+	"github.com/scrypster/muninndb/internal/storage/keys"
 	"github.com/scrypster/muninndb/internal/transport/mbp"
 )
 
@@ -40,10 +42,18 @@ type DefaultWeights struct {
 type Weights struct {
 	SemanticSimilarity float32
 	FullTextRelevance  float32
-	DecayFactor        float32
-	HebbianBoost       float32
-	AccessFrequency    float32
-	Recency            float32
+	// SemanticBaseline is the COG-26 anisotropy noise floor b for the query
+	// embed model, resolved by the caller from the per-embedder registry
+	// (internal/plugin/embed/baseline.go) or a per-vault plasticity override.
+	// 0 (the zero value, and the default for direct/library callers who don't
+	// set it) is the identity transform — semCal == raw cosine, unchanged
+	// pre-COG-26 behavior. Only the root engine resolves and sets a nonzero
+	// value for calibrated models.
+	SemanticBaseline float32
+	DecayFactor      float32
+	HebbianBoost     float32
+	AccessFrequency  float32
+	Recency          float32
 	// CGDN mode: set UseCGDN=true to enable Cognitive-Gated Divisive Normalization.
 	UseCGDN   bool
 	CGDNAlpha float32 // Ebbinghaus gate exponent (0 → default 1.5)
@@ -66,10 +76,12 @@ type Weights struct {
 type resolvedWeights struct {
 	SemanticSimilarity float64
 	FullTextRelevance  float64
-	DecayFactor        float64
-	HebbianBoost       float64
-	AccessFrequency    float64
-	Recency            float64
+	// SemanticBaseline is COG-26's resolved b; see Weights.SemanticBaseline.
+	SemanticBaseline float64
+	DecayFactor      float64
+	HebbianBoost     float64
+	AccessFrequency  float64
+	Recency          float64
 
 	// CGDN: Cognitive-Gated Divisive Normalization (Carandini & Heeger 2012).
 	// When UseCGDN=true, replaces the additive weighted sum with:
@@ -120,15 +132,35 @@ type ScoredID struct {
 // ScoreComponents breaks down how a score was computed.
 type ScoreComponents struct {
 	SemanticSimilarity float64
-	FullTextRelevance  float64
-	DecayFactor        float64
-	HebbianBoost       float64
-	TransitionBoost    float64
-	AccessFrequency    float64
-	Recency            float64
-	Confidence         float64
-	Raw                float64
-	Final              float64
+	// SemanticSimilarityRaw is the uncalibrated cosine similarity — the value
+	// SemanticSimilarity would be if no COG-26 baseline rescale were applied
+	// (rescaleSemantic(vectorScore, 0) == vectorScore). This is the honesty
+	// backstop the COG-26 design named but never wired up: an operator
+	// debugging a wrongly-abstained match needs to see the raw cosine (e.g.
+	// 0.59, a genuine signal) alongside the calibrated value that made it
+	// abstain (e.g. 0.07), or the floor is unauditable. Always populated
+	// alongside SemanticSimilarity at every site that sets it.
+	SemanticSimilarityRaw float64
+	// FullTextRelevance is an absolute, query-calibrated IDF-weighted coverage
+	// score in [0,1] straight from fts.Index.Search (COG-24, issue #711) — the
+	// fraction of the query's IDF mass this engram covers. It is NOT a
+	// normalized raw BM25 score; corpus-absent query terms are charged the
+	// corpus's maximum-rarity IDF, so a query with no real overlap scores low
+	// here regardless of what else matched.
+	FullTextRelevance float64
+	DecayFactor       float64
+	HebbianBoost      float64
+	TransitionBoost   float64
+	// EntityBoost is the post-pipeline spread-activation adjustment added by
+	// the entity boost phase (rarity-weighted, capped). Zero when the result
+	// received no entity boost; for engrams injected by that phase it equals
+	// the full Score (issue #569).
+	EntityBoost     float64
+	AccessFrequency float64
+	Recency         float64
+	Confidence      float64
+	Raw             float64
+	Final           float64
 }
 
 // ScoredEngram is one activation result.
@@ -140,6 +172,15 @@ type ScoredEngram struct {
 	HopPath     []storage.ULID
 	HopConcepts []string
 	Dormant     bool
+
+	// SupersededBy / CurrentVersion are set by the engine's supersedes-aware
+	// recall phase (applySupersession) on a result that is superseded by a newer
+	// active engram. SupersededBy is the immediate superseder; CurrentVersion is
+	// the chain head (the fact to consult now). Both zero when not superseded.
+	// They let recall surface "this is stale — current is X" without the caller
+	// opting into annotations or making a second call.
+	SupersededBy   storage.ULID
+	CurrentVersion storage.ULID
 }
 
 // EngramFilter is a post-retrieval predicate applied as the final activation step.
@@ -179,6 +220,28 @@ type ActivateRequest struct {
 	CallerOwner string
 	// IncludeLeased disables lease-based visibility filtering (admin/debugging).
 	IncludeLeased bool
+	// AsOf, when set, gates results by the full valid-time interval check
+	// [ValidFrom, ValidUntil) at T ("what was true at T"). Nil = the default
+	// gate: drop only engrams whose closed ValidUntil <= now; a future
+	// ValidFrom is deliberately NOT hidden (hiding a just-stored future fact
+	// until a clock ticks kills trust).
+	AsOf *time.Time
+	// IncludeInvalid disables the valid-time gate entirely (show history).
+	IncludeInvalid bool
+}
+
+// PassesValidity is the valid-time recall gate (COG-19: default recall never
+// returns an engram whose ValidUntil <= now). Validity is a HARD filter —
+// cognition ranks only survivors. Shared by phase-6 scoring and the engine's
+// final post-entity-boost gate so injected candidates cannot bypass it.
+func PassesValidity(eng *storage.Engram, asOf *time.Time, includeInvalid bool, now time.Time) bool {
+	if includeInvalid {
+		return true
+	}
+	if asOf != nil {
+		return eng.ValidAt(*asOf)
+	}
+	return !eng.IsExpired(now)
 }
 
 // ActivateResult is what the transport layer serializes and returns.
@@ -205,6 +268,18 @@ type ActivateResponseFrame struct {
 type ActivationStore interface {
 	GetMetadata(ctx context.Context, wsPrefix [8]byte, ids []storage.ULID) ([]*storage.EngramMeta, error)
 	GetEngrams(ctx context.Context, wsPrefix [8]byte, ids []storage.ULID) ([]*storage.Engram, error)
+	// GetEmbedding reads the standalone embedding (0x18 key, ERF v2) for a single
+	// engram. GetEngrams does NOT join this key (embeddings are large and the
+	// join is a hot-path cost not every caller needs), so any post-load cosine
+	// fixup that finds eng.Embedding empty must fall back to this — see
+	// storage.PebbleStore.GetEmbedding and the identical fallback in
+	// internal/consolidation/dedup.go and orient.go.
+	GetEmbedding(ctx context.Context, wsPrefix [8]byte, id storage.ULID) ([]float32, error)
+	// GetEmbeddings batch-reads the standalone embeddings (0x18 keys, ERF v2) for
+	// multiple engrams in one round-trip -- see storage.PebbleStore.GetEmbeddings.
+	// The returned slice is positionally aligned with ids; an id with no stored
+	// embedding gets a nil/empty entry, never an error.
+	GetEmbeddings(ctx context.Context, wsPrefix [8]byte, ids []storage.ULID) ([][]float32, error)
 	// GetLeases batch-reads ownership leases, one per id in order (zero Lease for
 	// unleased engrams). Used for work-queue recall visibility filtering.
 	GetLeases(ctx context.Context, wsPrefix [8]byte, ids []storage.ULID) ([]storage.Lease, error)
@@ -225,6 +300,12 @@ type ActivationStore interface {
 	// bounds the intersection OUTPUT and never truncates a per-tag input window
 	// (see storage.PebbleStore.ListByTagsAllInRange). Used for tags_all seeding.
 	ListByTagsAllInRange(ctx context.Context, wsPrefix [8]byte, tags []string, since, until time.Time, limit int) ([]storage.ULID, error)
+	// ScanRawTagRange scans the S1 ordered raw-tag index (0x2B) for tagKey
+	// within [lower, upper) — see storage.PebbleStore.ScanRawTagRange and
+	// keys.RawTagRangeBound. Used to SEED candidates for tag_prefix filters
+	// (e.g. due:<=today) so a bounded range query does not depend on the
+	// engram already being a candidate from FTS/HNSW/decay/tags_all/tags_any.
+	ScanRawTagRange(ctx context.Context, wsPrefix [8]byte, tagKey string, lower, upper []byte, limit int) ([]storage.ULID, error)
 	// RestoreArchivedEdgesTransitive lazily restores archived edges for src and
 	// its direct neighbors, returning the set of restored destination IDs.
 	RestoreArchivedEdgesTransitive(ctx context.Context, wsPrefix [8]byte, src storage.ULID, maxDirect int, maxTransitive int) ([]storage.ULID, error)
@@ -277,6 +358,10 @@ type ActivationEngine struct {
 	logCh     chan logItem
 	logDone   chan struct{}
 	closeOnce sync.Once
+	// logWG tracks in-flight logCh items (Add before enqueue, Done after
+	// drainLog applies the entry to assocLog) so tests can await full log
+	// visibility. See WaitLogIdle.
+	logWG sync.WaitGroup
 }
 
 // New creates a new ActivationEngine.
@@ -337,7 +422,37 @@ func (e *ActivationEngine) drainLog() {
 			EngramIDs: ids,
 			Scores:    scores,
 		})
+		e.logWG.Done()
 	}
+}
+
+// WaitLogIdle blocks until every activation-log entry submitted so far (via
+// the logCh <- logItem send in Run()) has been applied to assocLog by
+// drainLog. Test-only synchronization helper, mirroring autoassoc.Worker's
+// WaitIdle pattern: production callers never await this — phase4HebbianBoost
+// tolerates the drainer's eventual consistency by design (comment on
+// drainLog: "the log may lag by ~1ms but Hebbian decay half-life is 3600s —
+// irrelevant"). That assumption fails in a scripted back-to-back test harness
+// (calls a few ms apart): under -race/CPU contention the drainer goroutine
+// can still be applying call N's entry when call N+1 runs phase4HebbianBoost,
+// so the same candidate nondeterministically scores with or without the
+// Hebbian boost from a just-finished activation — flipping which of two
+// near-tied candidates ranks first. Exported only because the caller
+// (engine.Engine.waitWriteTimeIdle, itself unexported/test-only) lives in a
+// different package — same visibility trade-off as autoassoc.Worker.WaitIdle.
+func (e *ActivationEngine) WaitLogIdle() {
+	e.logWG.Wait()
+}
+
+// ResetLog discards assocLog's recorded activation events for vaultID.
+// Test-only: see ActivationLog.ResetVault for the full rationale (a scripted
+// back-to-back harness modeling separate agent sessions compresses real
+// elapsed time, defeating the recency half-life that normally bounds
+// cross-call priming). Callers MUST call WaitLogIdle first if a just-run
+// Activate() may still have an entry in flight, or the drainer can
+// re-populate the vault's log immediately after this call clears it.
+func (e *ActivationEngine) ResetLog(vaultID uint32) {
+	e.assocLog.ResetVault(vaultID)
 }
 
 // SetTransitionStore sets the PAS transition store for candidate injection.
@@ -467,6 +582,7 @@ func (e *ActivationEngine) Run(ctx context.Context, req *ActivateRequest) (*Acti
 	// The drainer extracts ids/scores off the critical path.
 	// Non-blocking: drops if channel full (Hebbian half-life=3600s, 1ms lag is negligible).
 	if !req.ReadOnly && len(result.Activations) > 0 {
+		e.logWG.Add(1) // Add FIRST — visible to WaitLogIdle() (test-only); undone below on drop
 		select {
 		case e.logCh <- logItem{vaultID: req.VaultID, activations: result.Activations}:
 			// Yield to allow the drainer goroutine to process immediately.
@@ -474,6 +590,7 @@ func (e *ActivationEngine) Run(ctx context.Context, req *ActivateRequest) (*Acti
 			// drainer queue depth in production under bursty load.
 			runtime.Gosched()
 		default: // channel full — drop; eventual consistency accepted
+			e.logWG.Done()
 		}
 	}
 
@@ -597,19 +714,34 @@ func extractTimeBounds(filters []Filter) (time.Time, time.Time, bool) {
 	return since, before, hasBounds
 }
 
-// extractTagFilters extracts tags_all/tags_any tag lists from the filter list.
-// Values are coerced with asStringSlice, matching passesMetaFilter's own
-// interpretation of these fields.
-func extractTagFilters(filters []Filter) (tagsAll, tagsAny []string) {
+// extractTagFilters extracts tags_all/tags_any tag lists, and raw tag_prefix
+// (prefix, op, bound) triples, from the filter list. tags_all/tags_any values
+// are coerced with asStringSlice; tag_prefix values are coerced with asPair —
+// both match PassesMetaFilter's own interpretation of these fields.
+func extractTagFilters(filters []Filter) (tagsAll, tagsAny []string, tagPrefix []tagPrefixFilter) {
 	for _, f := range filters {
 		switch f.Field {
 		case "tags_all":
 			tagsAll = append(tagsAll, asStringSlice(f.Value)...)
 		case "tags_any":
 			tagsAny = append(tagsAny, asStringSlice(f.Value)...)
+		case "tag_prefix":
+			if pb := asPair(f.Value); pb != nil {
+				tagPrefix = append(tagPrefix, tagPrefixFilter{Prefix: pb[0], Op: f.Op, Bound: pb[1]})
+			}
 		}
 	}
-	return tagsAll, tagsAny
+	return tagsAll, tagsAny, tagPrefix
+}
+
+// tagPrefixFilter is a decoded tag_prefix filter: engrams whose tag begins
+// with Prefix (e.g. "due:") are compared, after stripping Prefix, against
+// Bound per Op (lte/gte/lt/gt/eq) — see PassesMetaFilter's "tag_prefix" case,
+// which this mirrors for candidate SEEDING via the S1 raw-tag-range index.
+type tagPrefixFilter struct {
+	Prefix string
+	Op     string
+	Bound  string
 }
 
 // seedTagCandidates queries the tag index for the requested tags and returns a
@@ -623,8 +755,16 @@ func extractTagFilters(filters []Filter) (tagsAll, tagsAny []string) {
 //   - both present: union of the tags_all intersection and the tags_any union.
 //
 // The tag index stores Hash(tag) (4-byte), so a seeded ID can be a hash-collision
-// false positive; passesMetaFilter in phase 6 remains the correctness gate.
-func (e *ActivationEngine) seedTagCandidates(ctx context.Context, ws [8]byte, tagsAll, tagsAny []string, since, until time.Time, limit int) []storage.ULID {
+// false positive; PassesMetaFilter in phase 6 remains the correctness gate.
+//
+// tagPrefix additionally seeds from the S1 ordered raw-tag-range index (0x2B):
+// for each distinct Prefix among tagPrefix, every filter sharing that prefix is
+// combined into a single bounded range scan (AND semantics — e.g. a gte and an
+// lte filter on the same prefix narrow to one bounded range), unioned into the
+// same seed set as tags_all/tags_any. This is what makes range-filtered recall
+// (e.g. tag_filter{prefix:"due:", lte:today}) SEED candidates instead of only
+// being checked post-hoc in phase 6's PassesMetaFilter.
+func (e *ActivationEngine) seedTagCandidates(ctx context.Context, ws [8]byte, tagsAll, tagsAny []string, tagPrefix []tagPrefixFilter, since, until time.Time, limit int) []storage.ULID {
 	seen := make(map[storage.ULID]struct{})
 	var seed []storage.ULID
 	add := func(ids []storage.ULID) {
@@ -657,6 +797,39 @@ func (e *ActivationEngine) seedTagCandidates(ctx context.Context, ws [8]byte, ta
 		}
 	}
 
+	// Group tag_prefix filters by Prefix (e.g. "due:") so multiple filters on
+	// the same prefix (gte + lte) combine into one bounded range scan instead
+	// of two independent (and semantically wrong, if ORed) scans.
+	if len(tagPrefix) > 0 {
+		byPrefix := make(map[string][]tagPrefixFilter, len(tagPrefix))
+		order := make([]string, 0, len(tagPrefix))
+		for _, tpf := range tagPrefix {
+			if _, ok := byPrefix[tpf.Prefix]; !ok {
+				order = append(order, tpf.Prefix)
+			}
+			byPrefix[tpf.Prefix] = append(byPrefix[tpf.Prefix], tpf)
+		}
+		for _, prefix := range order {
+			tagKey := strings.TrimSuffix(prefix, ":")
+			if tagKey == "" {
+				continue
+			}
+			tagKeyHash := keys.Hash(tagKey)
+			var lower, upper []byte
+			for i, tpf := range byPrefix[prefix] {
+				lo, hi := keys.RawTagRangeBound(ws, tagKeyHash, tpf.Op, []byte(tpf.Bound))
+				if i == 0 {
+					lower, upper = lo, hi
+				} else {
+					lower, upper = keys.CombineRawTagRangeBounds(lower, upper, lo, hi)
+				}
+			}
+			if ids, err := e.store.ScanRawTagRange(ctx, ws, tagKey, lower, upper, limit); err == nil {
+				add(ids)
+			}
+		}
+	}
+
 	return seed
 }
 
@@ -673,8 +846,8 @@ func (e *ActivationEngine) phase2(ctx context.Context, req *ActivateRequest, p1 
 	// Extract tag filters for tag-scoped candidate seeding. The tag scans reuse the
 	// time window (zero since → epoch; zero before → now) so tag-filtered recall
 	// combined with explicit time bounds respects both via the ULID-ordered index.
-	tagsAll, tagsAny := extractTagFilters(req.Filters)
-	hasTagFilters := len(tagsAll) > 0 || len(tagsAny) > 0
+	tagsAll, tagsAny, tagPrefix := extractTagFilters(req.Filters)
+	hasTagFilters := len(tagsAll) > 0 || len(tagsAny) > 0 || len(tagPrefix) > 0
 	tagSince := since
 	if tagSince.IsZero() {
 		tagSince = time.Unix(0, 0)
@@ -710,7 +883,7 @@ func (e *ActivationEngine) phase2(ctx context.Context, req *ActivateRequest, p1 
 
 		// Tag-scoped candidate seeding (fast path).
 		if hasTagFilters {
-			sets.tag = e.seedTagCandidates(ctx, ws, tagsAll, tagsAny, tagSince, tagUntil, k*3)
+			sets.tag = e.seedTagCandidates(ctx, ws, tagsAll, tagsAny, tagPrefix, tagSince, tagUntil, k*3)
 		}
 
 		// PAS: transition candidate retrieval (fast path)
@@ -786,7 +959,7 @@ func (e *ActivationEngine) phase2(ctx context.Context, req *ActivateRequest, p1 
 	// Tag-scoped candidate seeding (parallel with other indices)
 	if hasTagFilters {
 		g.Go(func() error {
-			sets.tag = e.seedTagCandidates(gctx, ws, tagsAll, tagsAny, tagSince, tagUntil, k*3)
+			sets.tag = e.seedTagCandidates(gctx, ws, tagsAll, tagsAny, tagPrefix, tagSince, tagUntil, k*3)
 			return nil
 		})
 	}
@@ -1396,21 +1569,58 @@ func (e *ActivationEngine) phase6Score(
 	}
 
 	// Compute vectorScore for candidates that entered the pipeline without an HNSW
-	// score now that engrams are loaded. Two cases need this:
+	// score now that engrams are loaded. Three cases need this:
 	//   - BFS-traversed candidates (never in the HNSW pool).
 	//   - Tag-seeded candidates that appear in no other pool (vectorScore == 0):
 	//     without this, ACT-R/CGDN/legacy contentMatch is zero and the tag hit is
 	//     threshold-dropped one layer below the seeding fix (caveat 1 of #607).
+	//   - FTS-only candidates (vectorScore == 0, ftsScore > 0): a lexical match that
+	//     never ranked into the HNSW top-K otherwise keeps vectorScore=0 forever,
+	//     silently dropping its entire semantic evidence term from the ACT-R blend
+	//     even though the engram's embedding is right there once loaded (#714-A2).
 	// A non-zero vectorScore from the HNSW pool is never overwritten.
 	// ftsScore is left at zero: BM25 requires corpus-level IDF statistics unavailable here.
 	if len(p1.embedding) > 0 {
+		// Two passes: first collect the embeddings already available (eng.Embedding
+		// non-empty) and the ids that need a fallback read; then fetch all fallback
+		// ids in ONE GetEmbeddings round-trip instead of one GetEmbedding point-read
+		// per candidate (#714 batch follow-up). Bounded to exactly this needsCosine
+		// candidate set, never the full result set.
+		embeds := make([]([]float32), len(all))
+		var fallbackIdx []int
+		var fallbackIDs []storage.ULID
 		for i := range all {
-			needsCosine := all[i].isTraversed || (all[i].inTagPool && all[i].vectorScore == 0)
+			needsCosine := all[i].isTraversed || (all[i].vectorScore == 0 && (all[i].inTagPool || all[i].ftsScore > 0))
 			if !needsCosine {
 				continue
 			}
-			if eng := engramByID[all[i].id]; eng != nil && len(eng.Embedding) > 0 {
-				all[i].vectorScore = float64(cosineSimilarity32(p1.embedding, eng.Embedding))
+			eng := engramByID[all[i].id]
+			if eng == nil {
+				continue
+			}
+			if len(eng.Embedding) > 0 {
+				embeds[i] = eng.Embedding
+				continue
+			}
+			// ERF v2 stores embeddings in a separate 0x18 key, so GetEngrams()
+			// above returns nil embeddings. Fall back to a batched GetEmbeddings()
+			// read in that case -- same pattern as internal/consolidation/dedup.go
+			// and orient.go, collapsed into one round-trip.
+			fallbackIdx = append(fallbackIdx, i)
+			fallbackIDs = append(fallbackIDs, eng.ID)
+		}
+		if len(fallbackIDs) > 0 {
+			if loaded, err := e.store.GetEmbeddings(ctx, ws, fallbackIDs); err == nil {
+				for j, idx := range fallbackIdx {
+					if j < len(loaded) && len(loaded[j]) > 0 {
+						embeds[idx] = loaded[j]
+					}
+				}
+			}
+		}
+		for i := range all {
+			if embed := embeds[i]; len(embed) > 0 {
+				all[i].vectorScore = float64(cosineSimilarity32(p1.embedding, embed))
 			}
 		}
 	}
@@ -1431,33 +1641,51 @@ func (e *ActivationEngine) phase6Score(
 	if w.UseRRFFusion {
 		for _, c := range all {
 			eng := engramByID[c.id]
-			if eng == nil || !passesMetaFilter(eng, req.Filters) {
+			if eng == nil || !PassesMetaFilter(eng, req.Filters) || !PassesValidity(eng, req.AsOf, req.IncludeInvalid, now) {
 				continue
 			}
 			final := computeRRFScore(c.rrfScore, c.hebbianBoost, c.transitionBoost, eng)
-			if final < req.Threshold {
+			// A filter defines the candidate SET; the relevance threshold only
+			// RANKS within it. An explicit tag-filter match (inTagPool, already
+			// verified by PassesMetaFilter above) must never be dropped for
+			// scoring below threshold — otherwise "due:<=today" reminders that
+			// are content-unrelated to the query silently vanish. Non-tag
+			// candidates are still thresholded normally.
+			if final < req.Threshold && !c.inTagPool {
 				continue
 			}
 			// Populate ScoreComponents for observability: report the individual
 			// signal scores so callers can understand the composition even though
-			// the final score is rank-based.
-			normalizedFTS := math.Tanh(c.ftsScore)
+			// the final score is rank-based. c.ftsScore is already a calibrated,
+			// absolute [0,1] coverage score post-#711 — no tanh normalization.
+			// SemanticSimilarity reports COG-26's calibrated value for the same
+			// reason: RRF's own ranking is rank-based (monotone in raw cosine,
+			// so rescale never reorders it — see rescaleSemantic), but the
+			// REPORTED value should read the same "how relevant" scale as every
+			// other scoring mode.
+			normalizedFTS := c.ftsScore
 			scored = append(scored, scoredItem{
 				id:    c.id,
 				final: final,
 				components: ScoreComponents{
-					SemanticSimilarity: c.vectorScore,
-					FullTextRelevance:  normalizedFTS,
-					HebbianBoost:       c.hebbianBoost,
-					TransitionBoost:    c.transitionBoost,
-					Confidence:         float64(eng.Confidence),
-					Raw:                c.rrfScore * (1.0 + c.hebbianBoost + c.transitionBoost),
-					Final:              final,
+					SemanticSimilarity:    rescaleSemantic(c.vectorScore, w.SemanticBaseline),
+					SemanticSimilarityRaw: c.vectorScore,
+					FullTextRelevance:     normalizedFTS,
+					HebbianBoost:          c.hebbianBoost,
+					TransitionBoost:       c.transitionBoost,
+					Confidence:            float64(eng.Confidence),
+					Raw:                   c.rrfScore * (1.0 + c.hebbianBoost + c.transitionBoost),
+					Final:                 final,
 				},
 				hopPath: c.hopPath,
 			})
 		}
-		sort.Slice(scored, func(i, j int) bool { return scored[i].final > scored[j].final })
+		sort.Slice(scored, func(i, j int) bool {
+			if scored[i].final != scored[j].final {
+				return scored[i].final > scored[j].final
+			}
+			return bytes.Compare(scored[i].id[:], scored[j].id[:]) < 0
+		})
 		goto cgdnDone
 	}
 
@@ -1482,11 +1710,12 @@ func (e *ActivationEngine) phase6Score(
 			activation float64
 			components ScoreComponents
 			hopPath    []storage.ULID
+			inTagPool  bool
 		}
 		cgdnCands := make([]cgdnCandidate, 0, len(all))
 		for _, c := range all {
 			eng := engramByID[c.id]
-			if eng == nil || !passesMetaFilter(eng, req.Filters) {
+			if eng == nil || !PassesMetaFilter(eng, req.Filters) || !PassesValidity(eng, req.AsOf, req.IncludeInvalid, now) {
 				continue
 			}
 			// Compute component scores (reuse existing helpers for decay, FTS normalization etc.)
@@ -1494,7 +1723,7 @@ func (e *ActivationEngine) phase6Score(
 			// Gated activation: content relevance × cognitive gate
 			a := computeGatedActivation(comp.SemanticSimilarity, comp.FullTextRelevance, comp.DecayFactor, comp.HebbianBoost, w)
 			cgdnCands = append(cgdnCands, cgdnCandidate{
-				id: c.id, activation: a, components: comp, hopPath: c.hopPath,
+				id: c.id, activation: a, components: comp, hopPath: c.hopPath, inTagPool: c.inTagPool,
 			})
 		}
 
@@ -1522,7 +1751,9 @@ func (e *ActivationEngine) phase6Score(
 			for _, cc := range cgdnCands {
 				r := math.Pow(cc.activation, n) / denom
 				final := r * cc.components.Confidence
-				if final < req.Threshold {
+				// Tag-filter matches bypass the relevance threshold — the filter
+				// defines the set (see the RRF path above for the full rationale).
+				if final < req.Threshold && !cc.inTagPool {
 					continue
 				}
 				cc.components.Raw = r
@@ -1533,7 +1764,12 @@ func (e *ActivationEngine) phase6Score(
 			}
 		}
 
-		sort.Slice(scored, func(i, j int) bool { return scored[i].final > scored[j].final })
+		sort.Slice(scored, func(i, j int) bool {
+			if scored[i].final != scored[j].final {
+				return scored[i].final > scored[j].final
+			}
+			return bytes.Compare(scored[i].id[:], scored[j].id[:]) < 0
+		})
 		goto cgdnDone
 	}
 
@@ -1549,19 +1785,20 @@ func (e *ActivationEngine) phase6Score(
 			id         storage.ULID
 			components ScoreComponents
 			hopPath    []storage.ULID
+			inTagPool  bool
 		}
 		actrCands := make([]actrCandidate, 0, len(all))
 		maxRaw := 0.0
 		for _, c := range all {
 			eng := engramByID[c.id]
-			if eng == nil || !passesMetaFilter(eng, req.Filters) {
+			if eng == nil || !PassesMetaFilter(eng, req.Filters) || !PassesValidity(eng, req.AsOf, req.IncludeInvalid, now) {
 				continue
 			}
-			components := computeACTR(c.vectorScore, c.ftsScore, c.hebbianBoost, c.transitionBoost, eng, lastAccessNsByID[c.id], now, w)
+			components := computeACTR(c.vectorScore, c.ftsScore, c.hebbianBoost, c.transitionBoost, eng, lastAccessNsByID[c.id], now, w, c.inTagPool)
 			if components.Raw > maxRaw {
 				maxRaw = components.Raw
 			}
-			actrCands = append(actrCands, actrCandidate{id: c.id, components: components, hopPath: c.hopPath})
+			actrCands = append(actrCands, actrCandidate{id: c.id, components: components, hopPath: c.hopPath, inTagPool: c.inTagPool})
 		}
 		// Rescale all raw scores by 1/maxRaw when any candidate saturated above 1.0.
 		// This preserves the [0,1] contract and relative ranking without altering the
@@ -1573,31 +1810,45 @@ func (e *ActivationEngine) phase6Score(
 		for _, cc := range actrCands {
 			raw := math.Min(cc.components.Raw*scale, 1.0)
 			final := raw * cc.components.Confidence
-			if final < req.Threshold {
+			// Tag-filter matches bypass the relevance threshold — the filter
+			// defines the set (see the RRF path above for the full rationale).
+			if final < req.Threshold && !cc.inTagPool {
 				continue
 			}
 			cc.components.Raw = raw
 			cc.components.Final = final
 			scored = append(scored, scoredItem{id: cc.id, final: final, components: cc.components, hopPath: cc.hopPath})
 		}
-		sort.Slice(scored, func(i, j int) bool { return scored[i].final > scored[j].final })
+		sort.Slice(scored, func(i, j int) bool {
+			if scored[i].final != scored[j].final {
+				return scored[i].final > scored[j].final
+			}
+			return bytes.Compare(scored[i].id[:], scored[j].id[:]) < 0
+		})
 		goto cgdnDone
 	}
 
 	// Legacy weighted-sum path: used when neither CGDN nor ACT-R is active (DisableACTR=true).
 	for _, c := range all {
 		eng := engramByID[c.id]
-		if eng == nil || !passesMetaFilter(eng, req.Filters) {
+		if eng == nil || !PassesMetaFilter(eng, req.Filters) || !PassesValidity(eng, req.AsOf, req.IncludeInvalid, now) {
 			continue
 		}
 		components := computeComponents(c.vectorScore, c.ftsScore, c.hebbianBoost, eng, lastAccessNsByID[c.id], now, w)
 		final := components.Final
-		if final < req.Threshold {
+		// Tag-filter matches bypass the relevance threshold — the filter
+		// defines the set (see the RRF path above for the full rationale).
+		if final < req.Threshold && !c.inTagPool {
 			continue
 		}
 		scored = append(scored, scoredItem{id: c.id, final: final, components: components, hopPath: c.hopPath})
 	}
-	sort.Slice(scored, func(i, j int) bool { return scored[i].final > scored[j].final })
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].final != scored[j].final {
+			return scored[i].final > scored[j].final
+		}
+		return bytes.Compare(scored[i].id[:], scored[j].id[:]) < 0
+	})
 
 cgdnDone:
 	totalFound := len(scored)
@@ -1690,13 +1941,24 @@ func computeComponents(vectorScore, ftsScore, hebbianBoost float64, eng *storage
 
 	decayFactor := math.Max(0.05, math.Exp(-daysSince/float64(eng.Stability)))
 
-	// Normalize BM25 score from [0, +∞) to [0, 1) using tanh.
-	// Raw BM25 is unbounded and not comparable to cosine similarity [0,1].
-	// tanh(0)=0, tanh(1)≈0.76, tanh(3)≈0.995 — preserves relative ordering,
-	// prevents high BM25 scores from saturating the composite score via clamping.
-	normalizedFTS := math.Tanh(ftsScore)
+	// ftsScore is ALREADY a calibrated, absolute [0,1] coverage score (see
+	// fts.Index.Search and COG-24) — no further normalization needed. Before
+	// #711 this applied math.Tanh() to squash raw unbounded BM25 into [0,1];
+	// that saturated by x≈3 (real BM25 magnitudes ran 2-40), making a single
+	// common-word match indistinguishable from a genuine multi-term match.
+	normalizedFTS := ftsScore
 
-	raw := w.SemanticSimilarity*vectorScore +
+	// COG-26: rescale raw cosine by the embed model's measured anisotropy
+	// noise baseline before it feeds the weighted sum — see rescaleSemantic.
+	// Reported SemanticSimilarity below is ALSO the calibrated value (not raw
+	// cosine): mirrors #711/COG-24's FullTextRelevance, which reports an
+	// absolute calibrated coverage score rather than raw BM25 — a caller
+	// reading score_components should see "how relevant", not a raw distance
+	// metric whose 0.50 might mean noise for one embed model and strong
+	// signal for another.
+	semCal := rescaleSemantic(vectorScore, w.SemanticBaseline)
+
+	raw := w.SemanticSimilarity*semCal +
 		w.FullTextRelevance*normalizedFTS +
 		w.DecayFactor*decayFactor +
 		w.HebbianBoost*hebbianBoost +
@@ -1713,15 +1975,16 @@ func computeComponents(vectorScore, ftsScore, hebbianBoost float64, eng *storage
 	conf := float64(eng.Confidence)
 
 	return ScoreComponents{
-		SemanticSimilarity: vectorScore,
-		FullTextRelevance:  normalizedFTS, // normalized [0,1), not raw BM25
-		DecayFactor:        decayFactor,
-		HebbianBoost:       hebbianBoost,
-		AccessFrequency:    accessFreq,
-		Recency:            recency,
-		Confidence:         conf,
-		Raw:                raw,
-		Final:              raw * conf,
+		SemanticSimilarity:    semCal,
+		SemanticSimilarityRaw: vectorScore,
+		FullTextRelevance:     normalizedFTS, // normalized [0,1), not raw BM25
+		DecayFactor:           decayFactor,
+		HebbianBoost:          hebbianBoost,
+		AccessFrequency:       accessFreq,
+		Recency:               recency,
+		Confidence:            conf,
+		Raw:                   raw,
+		Final:                 raw * conf,
 	}
 }
 
@@ -1729,6 +1992,41 @@ func computeComponents(vectorScore, ftsScore, hebbianBoost float64, eng *storage
 // It equals 1 + softplus(0) = 1 + ln(1 + exp(0)) = 1 + ln(2) ≈ 1.6931471805599453.
 // Precomputing this constant avoids recomputing softplus(0) on every engram scored.
 const actrDenominator = 1.6931471805599453
+
+// rescaleSemantic applies the COG-26 baseline-calibrated relevance transform
+// to a raw cosine similarity:
+//
+//	semCal = max(0, (cos - b) / (1 - b))
+//
+// b is the embed model's measured anisotropy noise baseline (resolved
+// upstream from the per-embedder registry, internal/plugin/embed/baseline.go,
+// or a per-vault plasticity override — never guessed here). b<=0 is the
+// identity transform: unresolved/unregistered models and direct/library
+// callers who never set Weights.SemanticBaseline see unchanged pre-COG-26
+// behavior. This mirrors internal/plugin/embed.Rescale exactly; duplicated
+// (not imported) to avoid a package cycle — embed already imports
+// engine/activation for its Embedder adapter.
+func rescaleSemantic(cos, b float64) float64 {
+	if b <= 0 || b >= 1 {
+		return cos
+	}
+	v := (cos - b) / (1 - b)
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+// tagMatchFloor is the minimum content-match value granted to candidates that
+// matched an explicit tag filter (inTagPool=true), under ACT-R scoring (COG-5
+// amendment for S1). Rationale for 0.1: genuine content matches (semantic
+// cosine similarity or normalized FTS relevance) typically land in the
+// 0.5-0.9 range for anything a human would call "relevant" — 0.1 sits well
+// below that band, so a real content match always outranks a floored
+// tag-only hit. It is comfortably above zero so that, combined with a
+// non-trivial base-level/confidence, an explicit tag-filter match survives
+// the default activation threshold (0.3) instead of being silently dropped.
+const tagMatchFloor = 0.1
 
 // softplus computes ln(1 + exp(x)), mapping (-inf,+inf) to (0,+inf).
 // Used as the activation function in ACT-R scoring: ensures the contextual prior
@@ -1779,11 +2077,34 @@ func cosineSimilarity32(a, b []float32) float32 {
 // B(M) + scale×Hebbian are additive: Hebbian can rescue old but linked memories.
 // This resolves the decay-vs-Hebbian tension without two separate pathways.
 func computeACTR(vectorScore, ftsScore, hebbianBoost, transitionBoost float64, eng *storage.Engram,
-	lastAccessNs int64, now time.Time, w resolvedWeights) ScoreComponents {
+	lastAccessNs int64, now time.Time, w resolvedWeights, inTagPool bool) ScoreComponents {
 
-	// Compute content relevance (same as standard path).
-	normalizedFTS := math.Tanh(ftsScore)
-	contentMatch := w.SemanticSimilarity*vectorScore + w.FullTextRelevance*normalizedFTS
+	// Compute content relevance (same as standard path). ftsScore is already a
+	// calibrated, absolute [0,1] coverage score (see fts.Index.Search, COG-24) —
+	// no tanh normalization needed post-#711. semCal is COG-26's baseline-
+	// rescaled cosine (rescaleSemantic): near-baseline cosine (anisotropy
+	// noise, bge-small ≈0.45-0.60) contributes ~0 to contentMatch instead of
+	// clearing the ACT-R gate below (engine.go:2308, threshold 0.1) on noise
+	// alone.
+	normalizedFTS := ftsScore
+	semCal := rescaleSemantic(vectorScore, w.SemanticBaseline)
+	contentMatch := w.SemanticSimilarity*semCal + w.FullTextRelevance*normalizedFTS
+
+	// COG-5 amendment (S1): candidates that matched an explicit tag filter
+	// (inTagPool) receive a content-match floor so an explicit filter match
+	// surfaces regardless of semantic/lexical overlap with the query. Without
+	// this, a content-unrelated tag hit scores contentMatch=0 and is dropped
+	// by the gate below even though the user explicitly asked for it via
+	// tags_all/tags_any/tag_prefix (S1 seeds these into the pool, but under
+	// default ACT-R scoring the gate silently discarded them). tagMatchFloor
+	// (0.1) is well below typical genuine content-match scores (0.5-0.9), so
+	// a real semantic/lexical match always outranks a floored tag-only hit —
+	// the floor only rescues candidates that would otherwise score exactly
+	// zero. RRF scoring already honors inTagPool via its own pool boost and
+	// is unaffected by this change. See docs/internals/invariants.md COG-5.
+	if inTagPool && contentMatch < tagMatchFloor {
+		contentMatch = tagMatchFloor
+	}
 
 	// Compute ACT-R base-level activation B(M).
 	// B(M) = ln(n+1) - d × ln(max(ageDays, ageFloor) / (n+1))
@@ -1836,16 +2157,17 @@ func computeACTR(vectorScore, ftsScore, hebbianBoost, transitionBoost float64, e
 	conf := float64(eng.Confidence)
 
 	return ScoreComponents{
-		SemanticSimilarity: vectorScore,
-		FullTextRelevance:  normalizedFTS,
-		DecayFactor:        math.Max(0.05, math.Exp(-ageDays/math.Max(float64(eng.Stability), 1.0))), // kept for reporting; guard against Stability=0
-		HebbianBoost:       hebbianBoost,
-		TransitionBoost:    transitionBoost,
-		AccessFrequency:    math.Log1p(float64(eng.AccessCount)) / math.Log1p(100),
-		Recency:            math.Exp(-ageDays * math.Log(2) / 7.0),
-		Confidence:         conf,
-		Raw:                raw,
-		Final:              raw * conf,
+		SemanticSimilarity:    semCal,
+		SemanticSimilarityRaw: vectorScore,
+		FullTextRelevance:     normalizedFTS,
+		DecayFactor:           math.Max(0.05, math.Exp(-ageDays/math.Max(float64(eng.Stability), 1.0))), // kept for reporting; guard against Stability=0
+		HebbianBoost:          hebbianBoost,
+		TransitionBoost:       transitionBoost,
+		AccessFrequency:       math.Log1p(float64(eng.AccessCount)) / math.Log1p(100),
+		Recency:               math.Exp(-ageDays * math.Log(2) / 7.0),
+		Confidence:            conf,
+		Raw:                   raw,
+		Final:                 raw * conf,
 	}
 }
 
@@ -1910,9 +2232,9 @@ func computeGatedActivation(vectorScore, normalizedFTS, decayFactor, hebbianBoos
 	return contentRelevance * gate
 }
 
-// passesMetaFilter evaluates filter predicates against a full engram.
+// PassesMetaFilter evaluates filter predicates against a full engram.
 // Accepts *storage.Engram directly — avoids a separate GetMetadata call in phase6.
-func passesMetaFilter(eng *storage.Engram, filters []Filter) bool {
+func PassesMetaFilter(eng *storage.Engram, filters []Filter) bool {
 	for _, f := range filters {
 		switch f.Field {
 		case "state":
@@ -2071,6 +2393,7 @@ func resolveWeights(req *Weights, def DefaultWeights) resolvedWeights {
 	rw := resolvedWeights{
 		SemanticSimilarity: float64(req.SemanticSimilarity),
 		FullTextRelevance:  float64(req.FullTextRelevance),
+		SemanticBaseline:   float64(req.SemanticBaseline),
 		DecayFactor:        float64(req.DecayFactor),
 		HebbianBoost:       float64(req.HebbianBoost),
 		AccessFrequency:    float64(req.AccessFrequency),
