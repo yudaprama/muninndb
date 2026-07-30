@@ -161,14 +161,18 @@ func (c *Client) Read(ctx context.Context, id, vault string) (*Engram, error) {
 	return engram, nil
 }
 
-// Activate activates memory based on context.
-func (c *Client) Activate(ctx context.Context, vault string, context []string, maxResults int) (*ActivateResponse, error) {
+// Activate activates memory based on context. Optional filters are
+// appended to the request for server-side filtering (e.g. tags_all).
+func (c *Client) Activate(ctx context.Context, vault string, context []string, maxResults int, filters ...Filter) (*ActivateResponse, error) {
 	req := ActivateRequest{
 		Vault:      vault,
 		Context:    context,
 		MaxResults: maxResults,
 		Threshold:  0.1,
 		MaxHops:    0,
+	}
+	if len(filters) > 0 {
+		req.Filters = filters
 	}
 
 	body, err := json.Marshal(req)
