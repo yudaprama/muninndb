@@ -1,0 +1,23 @@
+sdk/go/muninn/types.go
+  s_e682e1f8a1e047::t_f9fc08e875ae09 80-87
+  s_e682e1f8a1e047::t_259384fb8ea8d6 95
+sdk/go/muninn/client.go
+  s_e682e1f8a1e047::t_0e530be2495ae9 164-166,174-175
+  s_e682e1f8a1e047::t_235e066db51693 176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "20b0887642dd911a3e1b4f8e8e7ecad37b8a8769",
+  "prompts": {},
+  "sessions": {
+    "s_e682e1f8a1e047": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_04eb53ed7ffesdqCryTtV3kNBI",
+        "model": "kawai-pro-max"
+      },
+      "human_author": "yudaprama <yudhaprama@icloud.com>"
+    }
+  }
+}
