@@ -2,7 +2,7 @@ name: Build and Release
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
     # triggers on tag push as well if manual tag created
 
 permissions:
