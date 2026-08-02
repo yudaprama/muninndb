@@ -1,0 +1,19 @@
+.github/workflows/sync-upstream.yml
+  s_97eaaa95aca456::t_738433afd33135 21-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "33676dad97887d78dd32b2c65a85291ed2253d7a",
+  "prompts": {},
+  "sessions": {
+    "s_97eaaa95aca456": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03f1f1fa7ffe3r2Vq5s6Sh36L4",
+        "model": "mimo-v2.5-free"
+      },
+      "human_author": "yudaprama <yudhaprama@icloud.com>"
+    }
+  }
+}
