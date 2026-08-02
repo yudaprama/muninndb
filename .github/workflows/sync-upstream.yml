@@ -18,7 +18,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch upstream
-        run: git fetch upstream develop
+        run: |
+          git remote add upstream https://github.com/scrypster/muninndb.git
+          git fetch upstream develop
 
       - name: Check diff
         id: diff
