@@ -704,3 +704,81 @@ func TestAuthMiddleware_BatchBodyTopLevelVaultIgnoredForAuthenticatedRequests(t 
 		t.Error("inner handler should have been called")
 	}
 }
+
+func TestVaultFromTrustedHeader_ResolvesVaultAndFullMode(t *testing.T) {
+	var gotVault, gotMode string
+	next := func(w http.ResponseWriter, r *http.Request) {
+		gotVault, _ = r.Context().Value(auth.ContextVault).(string)
+		gotMode, _ = r.Context().Value(auth.ContextMode).(string)
+		w.WriteHeader(http.StatusOK)
+	}
+	handler := auth.VaultFromTrustedHeader("X-User-Id", next)
+
+	req := httptest.NewRequest("GET", "/api/engrams", nil)
+	req.Header.Set("X-User-Id", "user-123")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if gotVault != "user-123" {
+		t.Errorf("vault = %q, want %q", gotVault, "user-123")
+	}
+	if gotMode != auth.ModeFull {
+		t.Errorf("mode = %q, want %q", gotMode, auth.ModeFull)
+	}
+}
+
+func TestVaultFromTrustedHeader_MissingHeaderUnauthorized(t *testing.T) {
+	called := false
+	handler := auth.VaultFromTrustedHeader("X-User-Id", func(http.ResponseWriter, *http.Request) { called = true })
+
+	req := httptest.NewRequest("GET", "/api/engrams", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	if called {
+		t.Error("next handler was called despite missing identity header")
+	}
+}
+
+func TestVaultFromTrustedHeader_MismatchedQueryVaultRejected(t *testing.T) {
+	called := false
+	handler := auth.VaultFromTrustedHeader("X-User-Id", func(http.ResponseWriter, *http.Request) { called = true })
+
+	req := httptest.NewRequest("GET", "/api/engrams?vault=someone-else", nil)
+	req.Header.Set("X-User-Id", "user-123")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	if called {
+		t.Error("next handler was called despite vault/identity mismatch")
+	}
+}
+
+func TestVaultFromTrustedHeader_MatchingQueryVaultAllowed(t *testing.T) {
+	var gotVault string
+	handler := auth.VaultFromTrustedHeader("X-User-Id", func(w http.ResponseWriter, r *http.Request) {
+		gotVault, _ = r.Context().Value(auth.ContextVault).(string)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/api/engrams?vault=user-123", nil)
+	req.Header.Set("X-User-Id", "user-123")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if gotVault != "user-123" {
+		t.Errorf("vault = %q, want %q", gotVault, "user-123")
+	}
+}

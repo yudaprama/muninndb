@@ -82,6 +82,14 @@ type ActivateRequest struct {
 	MaxHops    int      `json:"max_hops,omitempty"`
 	IncludeWhy bool     `json:"include_why,omitempty"`
 	BriefMode  string   `json:"brief_mode,omitempty"`
+	Filters    []Filter `json:"filters,omitempty"`
+}
+
+// Filter represents a filter for activation queries.
+type Filter struct {
+	Field string      `json:"field"`
+	Op    string      `json:"op"`
+	Value interface{} `json:"value"`
 }
 
 // ActivationItem represents a single activated memory item.
@@ -89,6 +97,7 @@ type ActivationItem struct {
 	ID         string   `json:"id"`
 	Concept    string   `json:"concept"`
 	Content    string   `json:"content"`
+	Tags       []string `json:"tags,omitempty"`
 	Score      float64  `json:"score"`
 	Confidence float64  `json:"confidence"`
 	Why        *string  `json:"why,omitempty"`

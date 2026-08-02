@@ -21,6 +21,23 @@ const (
 	defaultRetryBackoff = 500 * time.Millisecond
 )
 
+// trustedVaultHeaderKey carries an optional trusted identity header (name+value)
+// that the server trusts as the vault, mirroring an auth-edge injection
+// (e.g. Oathkeeper setting X-User-Id). Trusted backends (such as the egent)
+// use this to reach a per-user vault without a per-user Bearer token.
+type trustedVaultHeaderKey struct{}
+
+// WithTrustedVaultHeader returns a ctx that makes the client set the named
+// trusted identity header to value on every request. The server must be running
+// in edge-auth mode (MUNINN_TRUST_EDGE_HEADER=<name>) for this to be honored.
+// This is the trusted-backend analog of an auth edge injecting the header.
+func WithTrustedVaultHeader(ctx context.Context, name, value string) context.Context {
+	if name == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, trustedVaultHeaderKey{}, [2]string{name, value})
+}
+
 // Client is the MuninnDB REST API client.
 type Client struct {
 	baseURL      string
@@ -144,8 +161,9 @@ func (c *Client) Read(ctx context.Context, id, vault string) (*Engram, error) {
 	return engram, nil
 }
 
-// Activate activates memory based on context.
-func (c *Client) Activate(ctx context.Context, vault string, context []string, maxResults int) (*ActivateResponse, error) {
+// Activate activates memory based on context. Optional filters are
+// appended to the request for server-side filtering (e.g. tags_all).
+func (c *Client) Activate(ctx context.Context, vault string, context []string, maxResults int, filters ...Filter) (*ActivateResponse, error) {
 	req := ActivateRequest{
 		Vault:      vault,
 		Context:    context,
@@ -155,6 +173,9 @@ func (c *Client) Activate(ctx context.Context, vault string, context []string, m
 		// vaults to empty regardless of the server-side fix.
 		Threshold: 0,
 		MaxHops:   0,
+	}
+	if len(filters) > 0 {
+		req.Filters = filters
 	}
 
 	body, err := json.Marshal(req)
@@ -230,7 +251,7 @@ func (c *Client) Subscribe(ctx context.Context, vault string) (<-chan Push, erro
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	c.addHeaders(req)
+	c.addHeaders(ctx, req)
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.httpClient.Do(req)
@@ -601,7 +622,7 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 			return fmt.Errorf("failed to create request: %w", err)
 		}
 
-		c.addHeaders(req)
+		c.addHeaders(ctx, req)
 
 		// Send request
 		resp, err := c.httpClient.Do(req)
@@ -665,9 +686,16 @@ func (c *Client) backoff(attempt int) {
 }
 
 // addHeaders adds default headers to the request.
-func (c *Client) addHeaders(req *http.Request) {
+func (c *Client) addHeaders(ctx context.Context, req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	if c.token != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
+	}
+	// Trusted-backend vault header (edge-auth analog). The server only honors it
+	// when running in edge mode with a matching MUNINN_TRUST_EDGE_HEADER.
+	if ctx != nil {
+		if hv, ok := ctx.Value(trustedVaultHeaderKey{}).([2]string); ok && hv[0] != "" {
+			req.Header.Set(hv[0], hv[1])
+		}
 	}
 }
