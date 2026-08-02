@@ -1,0 +1,33 @@
+sdk/go/muninn/identity_test.go
+  s_83df5d2679f553::t_c91ef8e71dd9f8 41
+  s_83df5d2679f553::t_8ccf35720a1311 3-6
+  s_83df5d2679f553::t_5e9688e01fc011 52-54
+  s_83df5d2679f553::t_8761e69413c8c4 1-2,7-40,42-51,55-98
+sdk/go/muninn/env_test.go
+  s_83df5d2679f553::t_9c3b94a77fba01 7-8
+  s_83df5d2679f553::t_cff83c65349bce 1-6,9-15
+sdk/go/muninn/concept.go
+  s_83df5d2679f553::t_88f688dfda0c01 1-37
+sdk/go/muninn/env.go
+  s_83df5d2679f553::t_e8a475be0b367b 1-20
+sdk/go/muninn/concept_test.go
+  s_83df5d2679f553::t_15bb64ee70235d 1-73
+sdk/go/muninn/identity.go
+  s_83df5d2679f553::t_ad66c7e75c3ef0 1-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "98096c837829a8f551dfab7f9364c912fc70ab7a",
+  "prompts": {},
+  "sessions": {
+    "s_83df5d2679f553": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_03f6e1c34ffehg20A4peYRU9d7",
+        "model": "glm-5.2"
+      },
+      "human_author": "yudaprama <yudhaprama@icloud.com>"
+    }
+  }
+}
