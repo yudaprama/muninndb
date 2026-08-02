@@ -1,0 +1,43 @@
+name: Sync upstream develop
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Setiap jam 2:00 UTC
+  workflow_dispatch:       # Manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream
+        run: git fetch upstream develop
+
+      - name: Check diff
+        id: diff
+        run: |
+          if [ -z "$(git log --oneline origin/develop..upstream/develop)" ]; then
+            echo "status=clean" >> $GITHUB_OUTPUT
+          else
+            echo "status=behind" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream/develop
+        if: steps.diff.outputs.status == 'behind'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout develop
+          git merge upstream/develop --no-edit
+          git push origin develop
+
+      - name: Summary
+        if: steps.diff.outputs.status == 'clean'
+        run: echo "Already up to date with upstream/develop"
