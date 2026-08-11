@@ -195,8 +195,9 @@ type Engine struct {
 	// nil-safe — callers check before recording.
 	latencyTracker *latency.Tracker
 
-	// retroProcessors holds references to background processors (embed, enrich)
-	// so Observability() can report their stats. Set via SetRetroactiveProcessors.
+	// retroProcessors holds background processors (embed, enrich) for both
+	// observability and the destructive-vault-operation admission fence.
+	// Set via SetRetroactiveProcessors before serving requests.
 	retroProcessors []*plugin.RetroactiveProcessor
 
 	// enrichPlugin is the optional EnrichPlugin used by ReplayEnrichment.
@@ -238,6 +239,26 @@ type Engine struct {
 	// recall would silently stop honoring the declaration forever. Cleared by
 	// noteContradictionDeclared.
 	contradictionProbeClean sync.Map
+
+	// declaredScanCache memoises the COG-29 debt readout's declared-edge scan
+	// per vault ([8]byte ws prefix -> *declaredScanCacheEntry), validated
+	// against the store's RelContradicts write counter. ONLY the scan is
+	// cached; resolution is re-derived on every call. See
+	// declaredContradictionsCached for why that split is load-bearing.
+	declaredScanCache sync.Map
+	// declaredScanRuns counts actual executions of that scan, so the gate and
+	// the cache — both of which change only I/O — can be pinned by a test.
+	declaredScanRuns atomic.Int64
+	// replicaProbe, when non-nil, reports whether this node is POSITIVELY a
+	// cluster follower (Lobe/Observer). The debt scan cache is bypassed on a
+	// follower because its invalidation signal — the store's RelContradicts
+	// write counter — never moves for replicated writes: replication.Applier
+	// commits raw Pebble batches below the store (#869 is the same class), so
+	// a follower's cache would serve a stale scan forever while the leader
+	// declares. nil (standalone) and false (leader / RoleUnknown) keep the
+	// cache; the asymmetry matches replication.LocalAppendFunc's fail-open
+	// reasoning. Set once at server wiring, before any traffic.
+	replicaProbe func() bool
 
 	// mergeMu serialises concurrent MergeEntity calls that touch the same entities.
 	// Uses a dedicated stripe array separate from the storage-layer entity locks to
@@ -427,8 +448,10 @@ func (e *Engine) ReevaluatePushOnEmbed(eng *storage.Engram, vec []float32) {
 	e.triggers.NotifyEmbed(wsVaultID(ws), eng, vec)
 }
 
-// SetRetroactiveProcessors registers background processors for observability.
-// Must be called before the engine starts serving requests (not safe for concurrent use with Observability).
+// SetRetroactiveProcessors registers background processors for observability
+// and for the correctness-critical vault-clear admission fence. Every active
+// retroactive processor must be registered before the engine serves requests.
+// Not safe for concurrent use with Observability or destructive vault operations.
 func (e *Engine) SetRetroactiveProcessors(procs ...*plugin.RetroactiveProcessor) {
 	e.retroProcessors = procs
 }
